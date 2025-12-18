@@ -41,7 +41,7 @@ class StockConfig:
         self._pos_lot_adds = [0.50, 0.50, 0.00]  # 批次加仓比例
         self._pos_lot_subs = [0.50, 0.30, 0.20]  # 批次减仓比例
 
-        self.turn_diff = 0.004  # 拐点最小差值百分比
+        self.turn_min_diff = 0.004  # 拐点最小差值百分比
         self.thresholds = [0.004, 0.006, 0.008]  # 涨跌阈值
 
         # 更新配置
@@ -77,16 +77,16 @@ class SMABar:
         self.fast = 0.0  # SMA快线
         self.slow = 0.0  # SMA慢线
 
-    def pre_next(self, bar: Bar):
-        self.fast = round(bar.close, 4)
-        self.slow = round(bar.close, 4)
+    def prep(self, bar: Bar):
+        self.fast = round(bar.close, 3)
+        self.slow = round(bar.close, 3)
         return self
 
     def next(self, bar: Bar, pre_sma: Self):
         fast = (pre_sma.fast * (cfg.sma.fast - 1) + bar.close) / cfg.sma.fast
         slow = (pre_sma.slow * (cfg.sma.slow - 1) + bar.close) / cfg.sma.slow
-        self.fast = round(fast, 4)
-        self.slow = round(slow, 4)
+        self.fast = round(fast, 3)
+        self.slow = round(slow, 3)
         return self
 
 
@@ -98,46 +98,39 @@ class MACDBar:
         self.dea = 0.0
         self.macd = 0.0
 
-    def pre_next(self, bar: Bar):
-        self.ema_fast = round(bar.close, 4)
-        self.ema_slow = round(bar.close, 4)
+    def prep(self, bar: Bar):
+        self.ema_fast = round(bar.close, 3)
+        self.ema_slow = round(bar.close, 3)
         return self
 
     def next(self, bar: Bar, pre_macd: Self):
         self.ema_fast = self._ema(bar.close, cfg.macd.fast, pre_macd.ema_fast)
         self.ema_slow = self._ema(bar.close, cfg.macd.slow, pre_macd.ema_slow)
-        self.dif = round(self.ema_fast - self.ema_slow, 4)
+        self.dif = round(self.ema_fast - self.ema_slow, 3)
         self.dea = self._ema(self.dif, cfg.macd.sign, pre_macd.dea)
-        self.macd = round((self.dif - self.dea) * 2, 4)
+        self.macd = round((self.dif - self.dea) * 2, 3)
         return self
 
     @staticmethod
     def _ema(price, period, pre_ema):
         alpha = 2 / (period + 1)
         ema = alpha * price + (1 - alpha) * pre_ema
-        return round(ema, 4)
-
-
-class MarkBar:
-    def __init__(self):
-        self.lots_add = cfg.pos.lot_adds.copy()  # 加仓批次
-        self.lots_sub = cfg.pos.lot_subs.copy()  # 减仓批次
+        return round(ema, 3)
 
 
 class NodeBar:
     def __init__(self, bar: Bar):
+        self.index = bar.datetime.strftime('%Y-%m-%d %H:%M:%S')
+        self.value = 0.0
+        self.turn = 0  # 起点-2，凹点-1，凸点1，其他0
+
         self._bar = bar
         self._sma = None
         self._macd = None
-        self._mark = None
 
-        self.datetime = bar.datetime.strftime('%Y-%m-%d %H:%M:%S')
-        self.turn = 0  # 拐点：凸点1、凹点-1、起点-2、其他0
-        self.value = 0.0
-
-    def pre_next(self):
-        self._sma = SMABar().pre_next(self._bar)
-        self._macd = MACDBar().pre_next(self._bar)
+    def prep(self):
+        self._sma = SMABar().prep(self._bar)
+        self._macd = MACDBar().prep(self._bar)
         self.value = self._sma.fast
         return self
 
@@ -145,14 +138,6 @@ class NodeBar:
         self._sma = SMABar().next(self._bar, pre_node.sma())
         self._macd = MACDBar().next(self._bar, pre_node.macd())
         self.value = self._sma.fast
-        return self
-
-    def turning(self, turn: int):
-        self.turn = turn
-        return self
-
-    def marking(self):
-        self._mark = MarkBar()
         return self
 
     def bar(self):
@@ -164,8 +149,27 @@ class NodeBar:
     def macd(self):
         return self._macd
 
-    def mark(self):
-        return self._mark
+
+class TurnBar:
+    def __init__(self, base_price: float, node: NodeBar):
+        self.threshold = round(base_price * cfg.turn_min_diff, 3)
+        self.turn_val = 0  # 起点-2，凹点-1，凸点1，其他0
+        self.lots_add = cfg.pos.lot_adds.copy()  # 加仓批次
+        self.lots_sub = cfg.pos.lot_subs.copy()  # 减仓批次
+
+        self._node = node
+        self._node_max = None
+        self._node_min = None
+
+    def most(self, node: NodeBar):
+        if self._node.value - node.value > self.threshold:
+            if self._node_min is None or node.value < self._node_min.value:
+                self._node_min = node
+            return
+        if node.value - self._node.value > self.threshold:
+            if self._node_max is None or node.value > self._node_max.value:
+                self._node_max = node
+
 
 
 class Pos:
@@ -197,78 +201,70 @@ class HistMarket:
 
 class PresMarket:
     def __init__(self):
-        self.state = -1  # 状态：-1未启动、0已重置、1已就绪
-        self.nodes = deque(maxlen=300)  # 节点
-        self.turns = deque(maxlen=300)  # 拐点
-        self.marks = deque(maxlen=300)  # 标记点
-
-        self.base_price = 0.0  # 基准价格
-        self.base_pos = None  # 基准仓位
         self.curr_pos = None  # 当前仓位
+        self.base_pos = None  # 基准仓位
+        self.base_price = 0.0  # 基准价格
 
-    def pre_next(self, bar_data):
+        self.state = -1  # 状态：-1未启动、0已重置、1已就绪
+        self.nodes = []  # 节点
+        self.turns = []  # 拐点
+        self.marks = []  # 标记点
+
+    def init(self, bar_data):
         self.base_price = round(bar_data.close, 3)
+        self.nodes.clear()
+        self.turns.clear()
+        self.marks.clear()
         self.state = 0
 
-    def next(self, bar_data, pos_data):
+    def next(self, bar, pos):
+        match self.state:
+            case -1:
+                self.init(bar)
+            case 0:
+                self.__prep(bar, pos)
+            case 1:
+                self.__next(bar, pos)
+
+    def __prep(self, bar_data, pos_data):
+        bar = Bar(bar_data)
+        node = NodeBar(bar).prep()
+        node.turn().turn_val = -2
+        self.nodes.append(node)
+        self.turns.append(node)
+        self.marks.append(node)
+        self.base_pos = Pos(pos_data)
+        self.state = 1
+
+    def __next(self, bar_data, pos_data):
         bar = Bar(bar_data)
         pos = Pos(pos_data)
-        if self.state == 1:
-            node_bar = NodeBar(bar).next(self.nodes[-1])
-            self.nodes.append(node_bar)
+        pre_node = self.nodes[-1]
+        node = NodeBar(bar).next(pre_node)
+        if node.sma().fast != pre_node.sma().fast:
+            self.nodes.append(node)
             self.__cals_turns()
-            self.__cals_marks()
-            self.curr_pos = NodePos(self.nodes[-1], pos)
+            self.curr_pos = NodePos(node, pos)
+
+    def __turn(self):
+        if len(self.nodes) < 3:
             return
+        prev = self.nodes[-1]
+        node = self.nodes[-2]
+        post = self.nodes[-3]
+        if prev.value < node.value > post.value:
+            node.turn().turn_val = 1
+        elif prev.valuel > node.value < post.value:
+            node.turn().turn_val = -1
 
-        if self.state == -1:
-            self.pre_next(bar_data)
-            return
-
-        if self.state == 0:
-            node_bar = NodeBar(bar).pre_next().turning(-2).marking()
-            self.nodes.append(node_bar)
-            self.turns.append(node_bar)
-            self.marks.append(node_bar)
-            self.base_pos = pos
-            self.state = 1
-            return
-
-    def __cals_turns(self):
-        # 获取连续不相等的点
-        nodes = []
-        pre_val = 0.0
-        for node in reversed(self.nodes):
-            if node.turn != 0:
-                nodes.append(node)
-                break
-            if pre_val != node.value:
-                pre_val = node.value
-                nodes.append(node)
-        if len(nodes) < 3:
-            return
-
-        # 计算拐点
-        nodes.reverse()
-        for i in range(1, len(nodes) - 1):
-            val = nodes[i].value
-            prev_val = nodes[i - 1].value
-            post_val = nodes[i + 1].value
-            if prev_val < val > post_val:
-                self.turns.append(nodes[i].turning(1))
-            elif prev_val > val < post_val:
-                self.turns.append(nodes[i].turning(-1))
-
-    def __cals_marks(self):
-        # 起始标记点
-        if self.marks[-1].turn == -2:
+    def __prep_mark(self):
+        if len(self.marks) == 1 and self.marks[-1].turn().turn_val == -2:
             curr_val = self.nodes[-1].value
             mark_val = self.marks[-1].value
-            if abs(curr_val - mark_val) / self.basis_price > cfg.turn_diff:
-                turn = 1 if mark_val > curr_val else -1
-                self.marks[-1].turning(turn).marking()
-            return
+            if abs(curr_val - mark_val) / self.base_price > cfg.turn_min_diff:
+                self.marks[-1].turn().turn_val = 1 if mark_val > curr_val else -1
 
+    def __next_mark(self):
         # 最低拐点、最高拐点
         turns = []
         start_time = self.marks[-1].datetime
@@ -286,7 +282,7 @@ class PresMarket:
         # 左右边界值、阈值
         val_left = self.marks[-1].value
         val_right = self.nodes[-1].value
-        threshold = round(self.basis_price * cfg.turn_diff, 4)
+        threshold = round(self.base_price * cfg.turn_min_diff, 3)
 
         # 差值大于阈值的拐点
         if val_left - val_min > threshold and val_right - val_min > threshold:
