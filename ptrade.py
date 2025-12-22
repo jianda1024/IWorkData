@@ -56,7 +56,7 @@ class StockConfig:
 
 
 # 全局配置
-cfg = StockConfig()
+CFG = StockConfig()
 
 
 class Bar:
@@ -82,8 +82,8 @@ class SMABar:
         return self
 
     def next(self, bar: Bar, pre_sma: Self):
-        fast = (pre_sma.fast * (cfg.sma.fast - 1) + bar.close) / cfg.sma.fast
-        slow = (pre_sma.slow * (cfg.sma.slow - 1) + bar.close) / cfg.sma.slow
+        fast = (pre_sma.fast * (CFG.sma.fast - 1) + bar.close) / CFG.sma.fast
+        slow = (pre_sma.slow * (CFG.sma.slow - 1) + bar.close) / CFG.sma.slow
         self.fast = round(fast, 4)
         self.slow = round(slow, 4)
         return self
@@ -103,10 +103,10 @@ class MACDBar:
         return self
 
     def next(self, bar: Bar, pre_macd: Self):
-        self.ema_fast = self._ema(bar.close, cfg.macd.fast, pre_macd.ema_fast)
-        self.ema_slow = self._ema(bar.close, cfg.macd.slow, pre_macd.ema_slow)
+        self.ema_fast = self._ema(bar.close, CFG.macd.fast, pre_macd.ema_fast)
+        self.ema_slow = self._ema(bar.close, CFG.macd.slow, pre_macd.ema_slow)
         self.dif = round(self.ema_fast - self.ema_slow, 4)
-        self.dea = self._ema(self.dif, cfg.macd.sign, pre_macd.dea)
+        self.dea = self._ema(self.dif, CFG.macd.sign, pre_macd.dea)
         self.macd = round((self.dif - self.dea) * 2, 4)
         return self
 
@@ -158,13 +158,13 @@ class NodeBar:
 
 class TurnBar:
     def __init__(self, node: NodeBar, base_price: float):
-        self.lots_add = cfg.pos.lot_adds.copy()  # 加仓批次
-        self.lots_sub = cfg.pos.lot_subs.copy()  # 减仓批次
+        self.lots_add = CFG.pos.lot_adds.copy()  # 加仓批次
+        self.lots_sub = CFG.pos.lot_subs.copy()  # 减仓批次
         self.datetime = node.datetime
         self.turning = node.turning
         self.value = node.value
 
-        self._threshold = round(base_price * cfg.turn_min_diff, 4)
+        self._threshold = round(base_price * CFG.turn_min_diff, 4)
         self._base_price = base_price
         self._head_max = None
         self._foot_min = None
@@ -195,7 +195,7 @@ class TurnBar:
         return None
 
 
-class NodePos:
+class LivePos:
     def __init__(self, pos, price_last: float = 0.0):
         self.amount_avail = getattr(pos, 'enable_amount', 0.0)  # 可用持仓数量
         self.amount_total = getattr(pos, 'amount', 0.0)  # 总持仓数量
@@ -204,12 +204,12 @@ class NodePos:
         self.valuation = self.amount_total * self.price_last  # 持仓市值
 
 
-class HistMarket:
+class LiveState:
     def __init__(self):
         pass
 
 
-class PresMarket:
+class StockMarket:
     def __init__(self):
         self.base_price = 0.0  # 基准价格
         self.nodes = []  # 节点
@@ -275,26 +275,26 @@ class StockTrader:
         self.lvl = -2  # 当前涨跌等级
 
     def init(self, pos):
-        self.base_amount = NodePos(pos).amount_avail
+        self.base_amount = LivePos(pos).amount_avail
         self.prices_add.clear()
         self.prices_sub.clear()
         self.ready = False
 
-    def prep(self, pos, mkt: PresMarket):
+    def prep(self, pos, mkt: StockMarket):
         if mkt and mkt.nodes and mkt.turns:
             self.base_price = mkt.base_price
             self.node = mkt.nodes[-1]
             self.turn = mkt.turns[-1]
-            self.pos = NodePos(pos)
+            self.pos = LivePos(pos)
             self.lvl = -2
             self.ready = True
 
     def supp_buy(self, order_func: Callable):
         """补仓"""
         if not self.ready: return
-        lower_limit = cfg.pos.capital * cfg.pos.lower
+        lower_limit = CFG.pos.capital * CFG.pos.lower
         if self.pos.valuation >= lower_limit: return
-        amount = max(lower_limit - self.pos.valuation, cfg.pos.capital * 0.25) / self.base_price
+        amount = max(lower_limit - self.pos.valuation, CFG.pos.capital * 0.25) / self.base_price
         amount = round(amount / 100) * 100
         order_func(self.symbol, amount)
 
@@ -323,7 +323,7 @@ class StockTrader:
             self.__do_buy(lvl, order_func)
 
     def __do_buy(self, lvl: int, order_func: Callable):
-        amount = cfg.pos.capital * self.turn.lots_add[lvl] / self.base_price
+        amount = CFG.pos.capital * self.turn.lots_add[lvl] / self.base_price
         amount = round(amount / 100) * 100
         order_func(self.symbol, amount)
         self.prices_add.append(self.pos.price_last)
@@ -345,7 +345,7 @@ class StockTrader:
     def __no_buy(self):
         """是否不买"""
         # 判断仓位：是否超过上限
-        if self.pos.valuation >= cfg.pos.capital * cfg.pos.upper:
+        if self.pos.valuation >= CFG.pos.capital * CFG.pos.upper:
             return True
 
         # 判断涨跌：节点SMA快线，是否超过节点SMA慢线
@@ -415,8 +415,8 @@ class StockTrader:
             self.lvl = -1
             diff_value = abs(self.node.sma().fast - self.turn.sma().fast)
             diff_ratio = round(diff_value / self.base_price, 3)
-            for level in range(len(cfg.thresholds) - 1, -1, -1):
-                if diff_ratio > cfg.thresholds[level]:
+            for level in range(len(CFG.thresholds) - 1, -1, -1):
+                if diff_ratio > CFG.thresholds[level]:
                     self.lvl = level
                     return self.lvl
         return self.lvl
@@ -427,15 +427,15 @@ class StockManager:
         self.symbol = symbol
         self.base_pos = None  # 基准仓位
         self.curr_pos = None  # 当前仓位
-        self.hist_mkt = HistMarket()  # 历史行情
-        self.pres_mkt = PresMarket()  # 当前行情
+        self.hist_mkt = LiveState()  # 历史行情
+        self.pres_mkt = StockMarket()  # 当前行情
 
     def prep(self, bar, pos, his_data):
-        self.base_pos = NodePos(pos)
+        self.base_pos = LivePos(pos)
         self.pres_mkt.prep(bar)
 
     def next(self, bar, pos):
-        self.curr_pos = NodePos(pos)
+        self.curr_pos = LivePos(pos)
         self.pres_mkt.next(bar)
 
 
