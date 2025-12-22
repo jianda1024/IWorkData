@@ -19,8 +19,7 @@ DISCLAIMER:
     Use at your own risk. Author not liable for any losses.
 """
 from types import SimpleNamespace
-from typing import Self
-from collections import deque
+from typing import Self, Callable
 
 
 class StockConfig:
@@ -63,13 +62,13 @@ cfg = StockConfig()
 class Bar:
     def __init__(self, bar):
         self.datetime = bar.datetime  # 时间
-        self.price = round(bar.price, 3)  # 最新价
-        self.close = round(bar.close, 3)  # 收盘价
-        self.open = round(bar.open, 3)  # 开盘价
-        self.high = round(bar.high, 3)  # 最高价
-        self.low = round(bar.low, 3)  # 最低价
-        self.volume = round(bar.volume)  # 交易量
+        self.price = round(bar.price, 4)  # 最新价
+        self.close = round(bar.close, 4)  # 收盘价
+        self.open = round(bar.open, 4)  # 开盘价
+        self.high = round(bar.high, 4)  # 最高价
+        self.low = round(bar.low, 4)  # 最低价
         self.money = round(bar.money, 2)  # 交易金额
+        self.volume = round(bar.volume)  # 交易量
 
 
 class SMABar:
@@ -77,16 +76,16 @@ class SMABar:
         self.fast = 0.0  # SMA快线
         self.slow = 0.0  # SMA慢线
 
-    def prep(self, bar: Bar):
-        self.fast = round(bar.close, 3)
-        self.slow = round(bar.close, 3)
+    def init(self, bar: Bar):
+        self.fast = round(bar.close, 4)
+        self.slow = round(bar.close, 4)
         return self
 
     def next(self, bar: Bar, pre_sma: Self):
         fast = (pre_sma.fast * (cfg.sma.fast - 1) + bar.close) / cfg.sma.fast
         slow = (pre_sma.slow * (cfg.sma.slow - 1) + bar.close) / cfg.sma.slow
-        self.fast = round(fast, 3)
-        self.slow = round(slow, 3)
+        self.fast = round(fast, 4)
+        self.slow = round(slow, 4)
         return self
 
 
@@ -98,342 +97,346 @@ class MACDBar:
         self.dea = 0.0
         self.macd = 0.0
 
-    def prep(self, bar: Bar):
-        self.ema_fast = round(bar.close, 3)
-        self.ema_slow = round(bar.close, 3)
+    def init(self, bar: Bar):
+        self.ema_fast = round(bar.close, 4)
+        self.ema_slow = round(bar.close, 4)
         return self
 
     def next(self, bar: Bar, pre_macd: Self):
         self.ema_fast = self._ema(bar.close, cfg.macd.fast, pre_macd.ema_fast)
         self.ema_slow = self._ema(bar.close, cfg.macd.slow, pre_macd.ema_slow)
-        self.dif = round(self.ema_fast - self.ema_slow, 3)
+        self.dif = round(self.ema_fast - self.ema_slow, 4)
         self.dea = self._ema(self.dif, cfg.macd.sign, pre_macd.dea)
-        self.macd = round((self.dif - self.dea) * 2, 3)
+        self.macd = round((self.dif - self.dea) * 2, 4)
         return self
 
     @staticmethod
     def _ema(price, period, pre_ema):
         alpha = 2 / (period + 1)
         ema = alpha * price + (1 - alpha) * pre_ema
-        return round(ema, 3)
+        return round(ema, 4)
 
 
 class NodeBar:
     def __init__(self, bar: Bar):
-        self.index = bar.datetime.strftime('%Y-%m-%d %H:%M:%S')
+        self.datetime = bar.datetime.strftime('%Y-%m-%d %H:%M:%S')
+        self.turning = 0  # 起点-2，凹点-1，凸点1，其他0
         self.value = 0.0
-        self.turn = 0  # 起点-2，凹点-1，凸点1，其他0
 
         self._bar = bar
         self._sma = None
         self._macd = None
 
-    def prep(self):
-        self._sma = SMABar().prep(self._bar)
-        self._macd = MACDBar().prep(self._bar)
+    def init(self) -> Self:
+        """初始节点，NodeBar"""
+        self._sma = SMABar().init(self._bar)
+        self._macd = MACDBar().init(self._bar)
         self.value = self._sma.fast
+        self.turning = -2
         return self
 
-    def next(self, pre_node: Self):
+    def next(self, pre_node: Self) -> Self:
+        """下一个节点，NodeBar"""
         self._sma = SMABar().next(self._bar, pre_node.sma())
         self._macd = MACDBar().next(self._bar, pre_node.macd())
         self.value = self._sma.fast
         return self
 
-    def bar(self):
+    def turn(self, base_price: float) -> Self:
+        """转换为拐点，TurnBar"""
+        return TurnBar(self, base_price)
+
+    def bar(self) -> Bar:
         return self._bar
 
-    def sma(self):
+    def sma(self) -> SMABar:
         return self._sma
 
-    def macd(self):
+    def macd(self) -> MACDBar:
         return self._macd
 
 
 class TurnBar:
-    def __init__(self, base_price: float, node: NodeBar):
-        self.threshold = round(base_price * cfg.turn_min_diff, 3)
-        self.turn_val = 0  # 起点-2，凹点-1，凸点1，其他0
+    def __init__(self, node: NodeBar, base_price: float):
         self.lots_add = cfg.pos.lot_adds.copy()  # 加仓批次
         self.lots_sub = cfg.pos.lot_subs.copy()  # 减仓批次
+        self.datetime = node.datetime
+        self.turning = node.turning
+        self.value = node.value
 
-        self._node = node
-        self._node_max = None
-        self._node_min = None
+        self._threshold = round(base_price * cfg.turn_min_diff, 4)
+        self._base_price = base_price
+        self._head_max = None
+        self._foot_min = None
 
-    def most(self, node: NodeBar):
-        if self._node.value - node.value > self.threshold:
-            if self._node_min is None or node.value < self._node_min.value:
-                self._node_min = node
-            return
-        if node.value - self._node.value > self.threshold:
-            if self._node_max is None or node.value > self._node_max.value:
-                self._node_max = node
+    def head_max(self, node: NodeBar):
+        """到下一拐点前：最大的凸点"""
+        if node.value - self.value > self._threshold:
+            if self._head_max is None or node.value > self._head_max.value:
+                self._head_max = node
 
+    def foot_min(self, node: NodeBar):
+        """到下一拐点前：最小的凹点"""
+        if self.value - node.value > self._threshold:
+            if self._foot_min is None or node.value < self._foot_min.value:
+                self._foot_min = node
 
-
-class Pos:
-    def __init__(self, pos):
-        self.is_empty = pos is None
-        self.amount_avail = getattr(pos, 'enable_amount', 0.0)  # 可用持仓数量
-        self.amount_total = getattr(pos, 'amount', 0.0)  # 总持仓数量
-        self.price_cost = getattr(pos, 'cost_basis', 0.0)  # 成本价格
-        self.price_last = getattr(pos, 'last_sale_price', 0.0)  # 最新价格
-        self.valuation = self.amount_total * self.price_last  # 持仓市值
+    def next_turn(self, node: NodeBar):
+        """下一拐点"""
+        if self.turning == -2:
+            diff = round(self.value - node.value, 4)
+            if abs(diff) > self._threshold:
+                self.turning = 1 if diff > 0 else -1
+            return None
+        if self._head_max and self._head_max.value - node.value > self._threshold:
+            return self._head_max.turn(self._base_price)
+        if self._foot_min and node.value - self._foot_min.value > self._threshold:
+            return self._foot_min.turn(self._base_price)
+        return None
 
 
 class NodePos:
-    def __init__(self, bar: NodeBar, pos: Pos):
-        self._bar = bar
-        self._pos = pos
-
-    def bar(self):
-        return self._bar
-
-    def pos(self):
-        return self._pos
+    def __init__(self, pos, price_last: float = 0.0):
+        self.amount_avail = getattr(pos, 'enable_amount', 0.0)  # 可用持仓数量
+        self.amount_total = getattr(pos, 'amount', 0.0)  # 总持仓数量
+        self.price_cost = getattr(pos, 'cost_basis', 0.0)  # 成本价格
+        self.price_last = getattr(pos, 'last_sale_price', price_last)  # 最新价格
+        self.valuation = self.amount_total * self.price_last  # 持仓市值
 
 
 class HistMarket:
     def __init__(self):
-        self.basis_price = 0.0  # 基准价格
+        pass
 
 
 class PresMarket:
     def __init__(self):
-        self.curr_pos = None  # 当前仓位
-        self.base_pos = None  # 基准仓位
         self.base_price = 0.0  # 基准价格
-
-        self.state = -1  # 状态：-1未启动、0已重置、1已就绪
         self.nodes = []  # 节点
         self.turns = []  # 拐点
-        self.marks = []  # 标记点
 
-    def init(self, bar_data):
-        self.base_price = round(bar_data.close, 3)
+    def prep(self, bar):
+        self.base_price = round(bar.close, 4)
         self.nodes.clear()
         self.turns.clear()
-        self.marks.clear()
-        self.state = 0
 
-    def next(self, bar, pos):
-        match self.state:
-            case -1:
-                self.init(bar)
-            case 0:
-                self.__prep(bar, pos)
-            case 1:
-                self.__next(bar, pos)
+    def next(self, bar):
+        if len(self.nodes) == 0:
+            self.__init(bar)
+        else:
+            self.__next(bar)
 
-    def __prep(self, bar_data, pos_data):
-        bar = Bar(bar_data)
-        node = NodeBar(bar).prep()
-        node.turn().turn_val = -2
+    def __init(self, bar):
+        node = NodeBar(bar).init()
+        turn = node.turn(self.base_price)
         self.nodes.append(node)
-        self.turns.append(node)
-        self.marks.append(node)
-        self.base_pos = Pos(pos_data)
-        self.state = 1
+        self.turns.append(turn)
 
-    def __next(self, bar_data, pos_data):
-        bar = Bar(bar_data)
-        pos = Pos(pos_data)
-        pre_node = self.nodes[-1]
-        node = NodeBar(bar).next(pre_node)
-        if node.sma().fast != pre_node.sma().fast:
-            self.nodes.append(node)
-            self.__cals_turns()
-            self.curr_pos = NodePos(node, pos)
-
-    def __turn(self):
+    def __next(self, bar):
+        node = NodeBar(bar).next(self.nodes[-1])
+        if node.value == self.nodes[-1].value:
+            return
+        self.nodes.append(node)
         if len(self.nodes) < 3:
             return
-        prev = self.nodes[-1]
+
+        # 计算凹凸点
+        prev = self.nodes[-3]
         node = self.nodes[-2]
-        post = self.nodes[-3]
+        post = self.nodes[-1]
         if prev.value < node.value > post.value:
-            node.turn().turn_val = 1
-        elif prev.valuel > node.value < post.value:
-            node.turn().turn_val = -1
+            node.turning = 1
+            self.turns[-1].head_max(node)
+        elif prev.value > node.value < post.value:
+            node.turning = -1
+            self.turns[-1].foot_min(node)
 
-    def __prep_mark(self):
-        if len(self.marks) == 1 and self.marks[-1].turn().turn_val == -2:
-            curr_val = self.nodes[-1].value
-            mark_val = self.marks[-1].value
-            if abs(curr_val - mark_val) / self.base_price > cfg.turn_min_diff:
-                self.marks[-1].turn().turn_val = 1 if mark_val > curr_val else -1
+        # 计算拐点
+        turn = self.turns[-1].next_turn(post)
+        self.turns.append(turn) if turn else None
 
-    def __next_mark(self):
-        # 最低拐点、最高拐点
-        turns = []
-        start_time = self.marks[-1].datetime
-        for node in reversed(self.turns):
-            if node.datetime <= start_time:
-                break
-            turns.append(node)
-        if not turns:
-            return
-        turn_min = min(turns, key=lambda x: x.value)
-        turn_max = max(turns, key=lambda x: x.value)
-        val_min = turn_min.value
-        val_max = turn_max.value
-
-        # 左右边界值、阈值
-        val_left = self.marks[-1].value
-        val_right = self.nodes[-1].value
-        threshold = round(self.base_price * cfg.turn_min_diff, 3)
-
-        # 差值大于阈值的拐点
-        if val_left - val_min > threshold and val_right - val_min > threshold:
-            self.marks.append(turn_min.marking())
-        if val_max - val_left > threshold and val_max - val_right > threshold:
-            self.marks.append(turn_max.marking())
-
-
-class StockManager:
-    def __init__(self):
-        self.hist_pos = None
-        self.hist_mkt = HistMarket()
-        self.pres_mkt = PresMarket()
-
-    def pre_next(self, bar, pos):
-        self.hist_pos = Pos(pos)
-        self.pres_mkt.pre_next(Bar(bar))
-
-    def next(self, bar, pos):
-        self.pres_mkt.next(Bar(bar))
-        cur_pos = NodePos(Pos(pos))
-
-
-class State:
-    def __init__(self, cfg: StockConfig, mkt: StockMarket, pos):
-        # 价格、持仓数量、估值
-        self.price = getattr(pos, 'last_sale_price', mkt.nodes[-1].price)
-        self.amount = getattr(pos, 'amount', 0)
-        self.valuation = self.amount * self.price
-        self.avail_amount = getattr(pos, 'enable_amount', 0)
-
-        # 是否上涨、是否下跌、是否均线向下趋势
-        self.is_rise = mkt.nodes[-1].price > mkt.turns[-1].price
-        self.is_fall = mkt.nodes[-1].price < mkt.turns[-1].price
-        self.is_sma_rise = mkt.nodes[-1].sma_fast >= mkt.nodes[-1].sma_slow
-        self.is_sma_fall = mkt.nodes[-1].sma_fast <= mkt.nodes[-1].sma_slow
-
-        # 是否超过上限、是否低于下限
-        self.is_above_upper = self.valuation >= cfg.pos_capital * cfg.pos_upper_limit
-        self.is_under_lower = self.valuation <= cfg.pos_capital * cfg.pos_lower_limit
-
-        # 当前涨跌阶段
-        self.lv = -1
-        dff_val = abs(mkt.turns[-1].sma_fast - mkt.nodes[-1].sma_fast)
-        dff_ratio = round(dff_val / mkt.close, 3)
-        for lv in range(len(cfg.thresholds) - 1, -1, -1):
-            if dff_ratio > cfg.thresholds[lv]:
-                self.lv = lv
-                break
+        # if self.nodes[-1].datetime > '2025-10-27 13:09:00':
+        #     pass
 
 
 class StockTrader:
-    def __init__(self, cfg: StockConfig, mkt: StockMarket):
-        self.cfg = cfg  # 配置
-        self.mkt = mkt  # 行情数据
-        self.prices_add = []  # 加仓价格
-        self.prices_sub = []  # 减仓价格
-        self.avail_amount = 0  # 起始可用持仓
+    def __init__(self, symbol: str):
+        self.symbol = symbol  # 股票代码
+        self.base_amount = 0.0  # 基准持仓
+        self.base_price = 0.0  # 基准价格
+        self.prices_add = []  # 已加仓价格
+        self.prices_sub = []  # 已减仓价格
 
-    def prepare(self, pos):
-        self.prices_add = []
-        self.prices_sub = []
-        self.avail_amount = getattr(pos, 'enable_amount', 0)
+        # 当前信息
+        self.ready = False  # 是否就绪
+        self.node = None  # 当前节点
+        self.turn = None  # 当前拐点
+        self.pos = None  # 当前持仓
+        self.lvl = -2  # 当前涨跌等级
 
-    def supp_amount(self, pos):
+    def init(self, pos):
+        self.base_amount = NodePos(pos).amount_avail
+        self.prices_add.clear()
+        self.prices_sub.clear()
+        self.ready = False
+
+    def prep(self, pos, mkt: PresMarket):
+        if mkt and mkt.nodes and mkt.turns:
+            self.base_price = mkt.base_price
+            self.node = mkt.nodes[-1]
+            self.turn = mkt.turns[-1]
+            self.pos = NodePos(pos)
+            self.lvl = -2
+            self.ready = True
+
+    def supp_buy(self, order_func: Callable):
         """补仓"""
-        state = State(self.cfg, self.mkt, pos)
-        if state.is_under_lower:
-            lower_limit = self.cfg.pos_capital * self.cfg.pos_lower_limit
-            amount = max(lower_limit - state.valuation, self.cfg.pos_capital * 0.25) / self.mkt.close
-            return round(amount / 100) * 100
-        return 0
+        if not self.ready: return
+        lower_limit = cfg.pos.capital * cfg.pos.lower
+        if self.pos.valuation >= lower_limit: return
+        amount = max(lower_limit - self.pos.valuation, cfg.pos.capital * 0.25) / self.base_price
+        amount = round(amount / 100) * 100
+        order_func(self.symbol, amount)
 
-    def amount(self, pos):
-        state = State(self.cfg, self.mkt, pos)
+    def do_trade(self, order_func: Callable):
+        """交易"""
+        if not self.ready: return
 
         # 减仓
-        is_sell, amount = self.__sell(state)
-        if is_sell:
-            return amount
+        if self.__is_sell():
+            self.__do_sell(order_func)
+            return
+
+        # 不买
+        if self.__no_buy():
+            return
 
         # 加仓
-        is_buy, amount = self.__is_buy(state)
-        if is_buy:
-            return amount
+        lvl = self.__get_lvl()
+        if self.__is_buy():
+            self.__do_buy(lvl, order_func)
+            return
 
         # 回购
-        is_back, amount = self.__is_back(state)
-        if is_back:
-            return amount
-        return 0
+        if self.__is_back():
+            lvl = lvl if lvl != -1 else 0
+            self.__do_buy(lvl, order_func)
 
-    def __sell(self, state: State):
-        # 是否减仓
-        if state.avail_amount <= 100:
-            return False, 0
-        if state.is_rise or state.is_sma_rise:
-            return False, 0
-        levels = self.mkt.turns[-1].lvs_sub
-        if state.lv == -1 or levels[state.lv] == 0:
-            return False, 0
+    def __do_buy(self, lvl: int, order_func: Callable):
+        amount = cfg.pos.capital * self.turn.lots_add[lvl] / self.base_price
+        amount = round(amount / 100) * 100
+        order_func(self.symbol, amount)
+        self.prices_add.append(self.pos.price_last)
+        self.turn.lots_add[lvl] = 0.0
 
-        # 减仓
+    def __do_sell(self, order_func: Callable):
         count = 0
-        for i in range(state.lv + 1):
-            if levels[i] != 0:
-                self.prices_sub.append(state.price)
-                count += levels[i]
-                levels[i] = 0.0
-        amount = self.avail_amount * count / self.mkt.close
-        amount = round(amount / 100) * 100
-        return True, -min(state.avail_amount - 100, amount)
+        lvl = self.__get_lvl()
+        lots = self.turn.lots_sub
+        for i in range(lvl + 1):
+            if lots[i] != 0:
+                self.prices_sub.append(self.pos.price_last)
+                count += lots[i]
+                lots[i] = 0.0
+        amount = round(self.base_amount * count / 100) * 100
+        amount = -min(self.pos.amount_avail - 100, amount)
+        order_func(self.symbol, amount)
 
-    def __is_buy(self, state: State):
-        # 是否加仓
-        if state.is_above_upper:
-            return False, 0
-        if state.is_fall or state.is_sma_fall:
-            return False, 0
-        levels = self.mkt.turns[-1].lvs_add
-        if state.lv == -1 or levels[state.lv] == 0:
-            return False, 0
+    def __no_buy(self):
+        """是否不买"""
+        # 判断仓位：是否超过上限
+        if self.pos.valuation >= cfg.pos.capital * cfg.pos.upper:
+            return True
 
-        # 加仓
-        amount = self.cfg.pos_capital * levels[state.lv] / self.mkt.close
-        amount = round(amount / 100) * 100
-        self.prices_add.append(state.price)
-        levels[state.lv] = 0.0
-        return True, amount
+        # 判断涨跌：节点SMA快线，是否超过节点SMA慢线
+        if self.node.sma().fast <= self.node.sma().low:
+            return True
 
-    def __is_back(self, state: State):
-        # 是否回购
-        if state.is_above_upper:
-            return False, 0
-        if state.is_fall or state.is_sma_fall:
-            return False, 0
+        # 判断涨跌：节点SMA快线，是否超过拐点SMA快线
+        return self.node.sma().fast <= self.turn.sma().fast
+
+    def __is_buy(self):
+        """是否买入"""
+        # 判断涨幅超过阈值
+        level = self.__get_lvl()
+        if level == -1:
+            return False
+
+        # 判断是否重复操作
+        if self.turn.lots_add[level] == 0:
+            return False
+
+        # 买入
+        return True
+
+    def __is_back(self):
+        """是否回购"""
+        # 判断买卖次数是否平衡
         length = len(self.prices_add)
         if length >= len(self.prices_sub):
-            return False, 0
+            return False
+
+        # 判断当前价格是否大于卖价
         self.prices_sub.sort()
-        if state.price <= self.prices_sub[length]:
-            return False, 0
+        if self.pos.price_last <= self.prices_sub[length]:
+            return False
 
         # 回购
-        lv = state.lv if state.lv != -1 else 0
-        levels = self.mkt.turns[-1].lvs_add
-        amount = self.cfg.pos_capital * levels[lv] / self.mkt.close
-        amount = round(amount / 100) * 100
-        self.prices_add.append(state.price)
-        levels[lv] = 0.0
-        return True, amount
+        return True
+
+    def __is_sell(self):
+        """是否卖出"""
+        # 判断可用持仓
+        if self.pos.base_amount <= 100:
+            return False
+
+        # 判断涨跌：节点SMA快线，是否超过节点SMA慢线
+        if self.node.sma().fast >= self.node.sma().low:
+            return False
+
+        # 判断涨跌：节点SMA快线，是否超过拐点SMA快线
+        if self.node.sma().fast >= self.turn.sma().fast:
+            return False
+
+        # 判断跌幅：是否超过阈值
+        level = self.__get_lvl()
+        if level == -1:
+            return False
+
+        # 判断是否重复操作
+        if self.turn.lots_sub[level] == 0:
+            return False
+
+        # 决定卖出
+        return True
+
+    def __get_lvl(self):
+        if self.lvl == -2:
+            self.lvl = -1
+            diff_value = abs(self.node.sma().fast - self.turn.sma().fast)
+            diff_ratio = round(diff_value / self.base_price, 3)
+            for level in range(len(cfg.thresholds) - 1, -1, -1):
+                if diff_ratio > cfg.thresholds[level]:
+                    self.lvl = level
+                    return self.lvl
+        return self.lvl
+
+
+class StockManager:
+    def __init__(self, symbol):
+        self.symbol = symbol
+        self.base_pos = None  # 基准仓位
+        self.curr_pos = None  # 当前仓位
+        self.hist_mkt = HistMarket()  # 历史行情
+        self.pres_mkt = PresMarket()  # 当前行情
+
+    def prep(self, bar, pos, his_data):
+        self.base_pos = NodePos(pos)
+        self.pres_mkt.prep(bar)
+
+    def next(self, bar, pos):
+        self.curr_pos = NodePos(pos)
+        self.pres_mkt.next(bar)
 
 
 # """
@@ -467,7 +470,7 @@ def initialize(context):
     set_universe(g.symbol)
 
     config = StockConfig(symbol=g.symbol)
-    g.market = StockMarket(config)
+    # g.market = StockMarket(config)
     pass
 
 
