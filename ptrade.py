@@ -22,7 +22,7 @@ from types import SimpleNamespace
 from typing import Self, Callable
 
 
-class StockConfig:
+class Config:
     def __init__(self, **kwargs):
         # MACD
         self._macd_fast = 12  # 快线周期
@@ -40,7 +40,7 @@ class StockConfig:
         self._pos_lot_adds = [0.50, 0.50, 0.00]  # 批次加仓比例
         self._pos_lot_subs = [0.50, 0.30, 0.20]  # 批次减仓比例
 
-        self.turn_min_diff = 0.004  # 拐点最小差值百分比
+        self.min_amp = 0.004  # 最小振幅
         self.thresholds = [0.004, 0.006, 0.008]  # 涨跌阈值
 
         # 更新配置
@@ -56,7 +56,16 @@ class StockConfig:
 
 
 # 全局配置
-CFG = StockConfig()
+CFG = Config()
+
+
+class Pos:
+    def __init__(self, pos, price_last: float = 0.0):
+        self.amount_avail = getattr(pos, 'enable_amount', 0.0)  # 可用持仓数量
+        self.amount_total = getattr(pos, 'amount', 0.0)  # 总持仓数量
+        self.price_cost = getattr(pos, 'cost_basis', 0.0)  # 成本价格
+        self.price_last = getattr(pos, 'last_sale_price', price_last)  # 最新价格
+        self.valuation = self.amount_total * self.price_last  # 持仓市值
 
 
 class Bar:
@@ -164,7 +173,7 @@ class TurnBar:
         self.turning = node.turning
         self.value = node.value
 
-        self._threshold = round(base_price * CFG.turn_min_diff, 4)
+        self._threshold = round(base_price * CFG.min_amp, 4)
         self._base_price = base_price
         self._head_max = None
         self._foot_min = None
@@ -195,18 +204,54 @@ class TurnBar:
         return None
 
 
-class LivePos:
-    def __init__(self, pos, price_last: float = 0.0):
-        self.amount_avail = getattr(pos, 'enable_amount', 0.0)  # 可用持仓数量
-        self.amount_total = getattr(pos, 'amount', 0.0)  # 总持仓数量
-        self.price_cost = getattr(pos, 'cost_basis', 0.0)  # 成本价格
-        self.price_last = getattr(pos, 'last_sale_price', price_last)  # 最新价格
-        self.valuation = self.amount_total * self.price_last  # 持仓市值
+class TradeLog:
+    def __init__(self):
+        self.map_datetime = ''
+        self.map_price = ''
+        self.map_value = ''
+
+        self.datetime = ''
+        self.amount = ''
+        self.price = ''
+        self.value = ''
+        self.type = ''
 
 
 class LiveState:
-    def __init__(self):
-        pass
+    def __init__(self, ):
+        self.ready = False  # 是否就绪
+        self.node = None  # 当前节点
+        self.turn = None  # 当前拐点
+        self.pos = None  # 当前持仓
+        self.lvl = -2  # 当前涨跌等级
+
+    def is_over_upper_limit(self) -> bool:
+        """仓位是否超过上限"""
+        return self.pos.valuation >= CFG.pos.capital * CFG.pos.upper
+
+    def is_over_lower_limit(self) -> bool:
+        """仓位是否超过下限"""
+        return self.pos.valuation >= CFG.pos.capital * CFG.pos.lower
+
+    def is_sma(self) -> bool:
+        return self.node.sma().fast > self.node.sma().low
+
+
+    def node(self, node: NodeBar):
+        self.node = node
+        return self
+
+    def turn(self, turn: TurnBar):
+        self.turn = turn
+        return self
+
+    def pos(self, pos: Pos):
+        self.pos = pos
+        return self
+
+    def lv(self, lvl: int):
+        self.lvl = lvl
+        return self
 
 
 class StockMarket:
@@ -259,7 +304,7 @@ class StockMarket:
         #     pass
 
 
-class StockTrader:
+class StockBroker:
     def __init__(self, symbol: str):
         self.symbol = symbol  # 股票代码
         self.base_amount = 0.0  # 基准持仓
@@ -275,7 +320,7 @@ class StockTrader:
         self.lvl = -2  # 当前涨跌等级
 
     def init(self, pos):
-        self.base_amount = LivePos(pos).amount_avail
+        self.base_amount = Pos(pos).amount_avail
         self.prices_add.clear()
         self.prices_sub.clear()
         self.ready = False
@@ -285,7 +330,7 @@ class StockTrader:
             self.base_price = mkt.base_price
             self.node = mkt.nodes[-1]
             self.turn = mkt.turns[-1]
-            self.pos = LivePos(pos)
+            self.pos = Pos(pos)
             self.lvl = -2
             self.ready = True
 
@@ -431,11 +476,11 @@ class StockManager:
         self.pres_mkt = StockMarket()  # 当前行情
 
     def prep(self, bar, pos, his_data):
-        self.base_pos = LivePos(pos)
+        self.base_pos = Pos(pos)
         self.pres_mkt.prep(bar)
 
     def next(self, bar, pos):
-        self.curr_pos = LivePos(pos)
+        self.curr_pos = Pos(pos)
         self.pres_mkt.next(bar)
 
 
@@ -469,7 +514,7 @@ def initialize(context):
     g.symbol = '512480.SS'
     set_universe(g.symbol)
 
-    config = StockConfig(symbol=g.symbol)
+    config = Config(symbol=g.symbol)
     # g.market = StockMarket(config)
     pass
 
