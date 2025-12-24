@@ -24,24 +24,27 @@ from typing import Self, Callable
 
 class Config:
     def __init__(self, **kwargs):
-        # MACD
-        self._macd_fast = 12  # 快线周期
-        self._macd_slow = 26  # 慢线周期
-        self._macd_sign = 9  # 信号线周期
+        # 仓位
+        self._pos_upper = 1.5  # 仓位上限比例
+        self._pos_lower = 0.9  # 仓位下限比例
+        self._pos_capital = 10000  # 仓位资金
 
         # SMA
         self._sma_fast = 10  # 快线周期
         self._sma_slow = 30  # 慢线周期
 
-        # 仓位管理
-        self._pos_capital = 10000  # 仓位资金
-        self._pos_upper = 1.5  # 仓位上限比例
-        self._pos_lower = 0.9  # 仓位下限比例
-        self._pos_lot_adds = [0.50, 0.50, 0.00]  # 批次加仓比例
-        self._pos_lot_subs = [0.50, 0.30, 0.20]  # 批次减仓比例
+        # MACD
+        self._macd_fast = 12  # 快线周期
+        self._macd_slow = 26  # 慢线周期
+        self._macd_sign = 9  # 信号线周期
 
-        self.min_amp = 0.004  # 最小振幅
-        self.thresholds = [0.004, 0.006, 0.008]  # 涨跌阈值
+        # 交易
+        self._trade_add_list = [0.50, 0.50, 0.00]  # 批次买入比例
+        self._trade_sub_list = [0.50, 0.30, 0.20]  # 批次卖出比例
+
+        # 波动
+        self._swing_min = 0.004
+        self._swing_list = [0.004, 0.006, 0.008]  # 涨跌阈值
 
         # 更新配置
         for key, value in kwargs.items():
@@ -49,10 +52,11 @@ class Config:
                 setattr(self, key, value)
 
         # 配置分组
-        self.macd = SimpleNamespace(fast=self._macd_fast, slow=self._macd_slow, sign=self._macd_sign)
+        self.pos = SimpleNamespace(capital=self._pos_capital, upper=self._pos_upper, lower=self._pos_lower)
         self.sma = SimpleNamespace(fast=self._sma_fast, slow=self._sma_slow)
-        self.pos = SimpleNamespace(capital=self._pos_capital, upper=self._pos_upper, lower=self._pos_lower,
-                                   lot_adds=self._pos_lot_adds, lot_subs=self._pos_lot_subs)
+        self.macd = SimpleNamespace(fast=self._macd_fast, slow=self._macd_slow, sign=self._macd_sign)
+        self.trade = SimpleNamespace(add_list=self._trade_add_list, sub_list=self._trade_sub_list)
+        self.swing = SimpleNamespace(swing_min=self._swing_min, swing_list=self._swing_list)
 
 
 # 全局配置
@@ -130,6 +134,7 @@ class NodeBar:
     def __init__(self, bar: Bar):
         self.datetime = bar.datetime.strftime('%Y-%m-%d %H:%M:%S')
         self.turning = 0  # 起点-2，凹点-1，凸点1，其他0
+        self.price = round(bar.price, 4)
         self.value = 0.0
 
         self._bar = bar
@@ -167,13 +172,12 @@ class NodeBar:
 
 class TurnBar:
     def __init__(self, node: NodeBar, base_price: float):
-        self.lots_add = CFG.pos.lot_adds.copy()  # 加仓批次
-        self.lots_sub = CFG.pos.lot_subs.copy()  # 减仓批次
         self.datetime = node.datetime
         self.turning = node.turning
+        self.price = node.price
         self.value = node.value
 
-        self._threshold = round(base_price * CFG.min_amp, 4)
+        self._threshold = round(base_price * CFG.swing.swing_min, 4)
         self._base_price = base_price
         self._head_max = None
         self._foot_min = None
@@ -205,16 +209,19 @@ class TurnBar:
 
 
 class TradeLog:
-    def __init__(self):
-        self.map_datetime = ''
-        self.map_price = ''
-        self.map_value = ''
+    def __init__(self, node: NodeBar, turn: TurnBar, amount):
+        self.trade_type = 1 if amount > 0 else (-1 if amount < 0 else 0)
+        self.trade_amount = amount
 
-        self.datetime = ''
-        self.amount = ''
-        self.price = ''
-        self.value = ''
-        self.type = ''
+        # 节点信息
+        self.bar_datetime = node.datetime
+        self.bar_price = node.price
+        self.bar_value = node.value
+
+        # 映射信息
+        self.map_datetime = turn.datetime
+        self.map_price = turn.price
+        self.map_value = turn.value
 
 
 class LiveState:
@@ -235,7 +242,6 @@ class LiveState:
 
     def is_sma(self) -> bool:
         return self.node.sma().fast > self.node.sma().low
-
 
     def node(self, node: NodeBar):
         self.node = node
