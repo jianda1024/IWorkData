@@ -208,8 +208,8 @@ class TurnBar:
         return None
 
 
-class TradeLog:
-    def __init__(self, node: NodeBar, turn: TurnBar, amount):
+class WorkLog:
+    def __init__(self, node: NodeBar, amount):
         self.trade_type = 1 if amount > 0 else (-1 if amount < 0 else 0)
         self.trade_amount = amount
 
@@ -219,48 +219,23 @@ class TradeLog:
         self.bar_value = node.value
 
         # 映射信息
+        self.map_datetime = ''
+        self.map_price = 0.0
+        self.map_value = 0.0
+
+    def map(self, turn: TurnBar):
         self.map_datetime = turn.datetime
         self.map_price = turn.price
         self.map_value = turn.value
-
-
-class LiveState:
-    def __init__(self, ):
-        self.ready = False  # 是否就绪
-        self.node = None  # 当前节点
-        self.turn = None  # 当前拐点
-        self.pos = None  # 当前持仓
-        self.lvl = -2  # 当前涨跌等级
-
-    def is_over_upper_limit(self) -> bool:
-        """仓位是否超过上限"""
-        return self.pos.valuation >= CFG.pos.capital * CFG.pos.upper
-
-    def is_over_lower_limit(self) -> bool:
-        """仓位是否超过下限"""
-        return self.pos.valuation >= CFG.pos.capital * CFG.pos.lower
-
-    def is_sma(self) -> bool:
-        return self.node.sma().fast > self.node.sma().low
-
-    def node(self, node: NodeBar):
-        self.node = node
-        return self
-
-    def turn(self, turn: TurnBar):
-        self.turn = turn
-        return self
-
-    def pos(self, pos: Pos):
-        self.pos = pos
-        return self
-
-    def lv(self, lvl: int):
-        self.lvl = lvl
         return self
 
 
-class StockMarket:
+class HistMarket:
+    def __init__(self):
+        pass
+
+
+class CurrMarket:
     def __init__(self):
         self.base_price = 0.0  # 基准价格
         self.nodes = []  # 节点
@@ -310,6 +285,28 @@ class StockMarket:
         #     pass
 
 
+class LiveStatus:
+    def __init__(self, his_mkt: HistMarket, cur_mkt: CurrMarket, pos: Pos):
+        self.node = cur_mkt.nodes[-1]  # 当前节点
+        self.turn = cur_mkt.turns[-1]  # 当前拐点
+        self.pos = pos  # 当前持仓
+        self.lvl = -2  # 当前涨跌等级
+
+    def is_gt_upper(self) -> bool:
+        """仓位：是否超过上限"""
+        return self.pos.valuation >= CFG.pos.capital * CFG.pos.upper
+
+    def is_gt_lower(self) -> bool:
+        """仓位：是否超过下限"""
+        return self.pos.valuation >= CFG.pos.capital * CFG.pos.lower
+
+    def is_sma_fall(self) -> bool:
+        """SMA："""
+        return self.node.sma().fast > self.node.sma().low
+
+
+
+
 class StockBroker:
     def __init__(self, symbol: str):
         self.symbol = symbol  # 股票代码
@@ -331,7 +328,7 @@ class StockBroker:
         self.prices_sub.clear()
         self.ready = False
 
-    def prep(self, pos, mkt: StockMarket):
+    def prep(self, pos, mkt: CurrMarket):
         if mkt and mkt.nodes and mkt.turns:
             self.base_price = mkt.base_price
             self.node = mkt.nodes[-1]
@@ -395,9 +392,7 @@ class StockBroker:
 
     def __no_buy(self):
         """是否不买"""
-        # 判断仓位：是否超过上限
-        if self.pos.valuation >= CFG.pos.capital * CFG.pos.upper:
-            return True
+
 
         # 判断涨跌：节点SMA快线，是否超过节点SMA慢线
         if self.node.sma().fast <= self.node.sma().low:
@@ -479,7 +474,7 @@ class StockManager:
         self.base_pos = None  # 基准仓位
         self.curr_pos = None  # 当前仓位
         self.hist_mkt = LiveState()  # 历史行情
-        self.pres_mkt = StockMarket()  # 当前行情
+        self.pres_mkt = CurrMarket()  # 当前行情
 
     def prep(self, bar, pos, his_data):
         self.base_pos = Pos(pos)
