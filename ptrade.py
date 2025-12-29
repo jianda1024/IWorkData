@@ -20,30 +20,68 @@ DISCLAIMER:
 """
 from types import SimpleNamespace
 from typing import Self, Callable
+from dataclasses import dataclass, field
 
 
-class Config:
+@dataclass
+class PosConfig:
+    capital: float = 10000  # 仓位资金
+    upper_ratio: float = 1.5  # 仓位上限比例
+    lower_ratio: float = 0.9  # 仓位下限比例
+
+
+@dataclass
+class SmaConfig:
+    fast_period: int = 10
+    slow_period: int = 30
+    day_fast_period: int = 10
+    day_slow_period: int = 60
+
+
+@dataclass
+class MACDConfig:
+    fast_period: int = 12
+    slow_period: int = 26
+    sign_period: int = 9
+
+
+class TradeConfig:
+    def __init__(self, **kwargs):
+        self.min_swing_min = 0.004  # 拐点最小振幅比例
+        self.add_ratios = [0.50, 0.50, 0.00]  # 依次买入的比例
+        self.sub_ratios = [0.50, 0.30, 0.20]  # 依次卖出的比例
+        self.thresholds = [0.004, 0.006, 0.008]  # 涨跌阈值比例
+
+        for key, value in kwargs.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
+
+
+class StockConfig:
     def __init__(self, **kwargs):
         # 仓位
         self._pos_upper = 1.5  # 仓位上限比例
         self._pos_lower = 0.9  # 仓位下限比例
         self._pos_capital = 10000  # 仓位资金
 
-        # SMA
-        self._sma_fast = 10  # 快线周期
-        self._sma_slow = 30  # 慢线周期
+        # SMA周期
+        self._sma_fast = 10
+        self._sma_slow = 30
+        self._sma_day_fast = 10
+        self._sma_day_slow = 60
 
-        # MACD
-        self._macd_fast = 12  # 快线周期
-        self._macd_slow = 26  # 慢线周期
-        self._macd_sign = 9  # 信号线周期
+        # MACD周期
+        self._macd_fast = 12
+        self._macd_slow = 26
+        self._macd_sign = 9
 
         # 交易
         self._trade_add_list = [0.50, 0.50, 0.00]  # 批次买入比例
         self._trade_sub_list = [0.50, 0.30, 0.20]  # 批次卖出比例
+        self._trade_thresholds = [0.004, 0.006, 0.008]  # 涨跌阈值
 
         # 波动
-        self._swing_min = 0.004
+        self._swing_min = 0.004  # 拐点最小振幅比例
         self._swing_list = [0.004, 0.006, 0.008]  # 涨跌阈值
 
         # 更新配置
@@ -59,17 +97,7 @@ class Config:
         self.swing = SimpleNamespace(swing_min=self._swing_min, swing_list=self._swing_list)
 
 
-# 全局配置
-CFG = Config()
-
-
-class Pos:
-    def __init__(self, pos, price_last: float = 0.0):
-        self.amount_avail = getattr(pos, 'enable_amount', 0.0)  # 可用持仓数量
-        self.amount_total = getattr(pos, 'amount', 0.0)  # 总持仓数量
-        self.price_cost = getattr(pos, 'cost_basis', 0.0)  # 成本价格
-        self.price_last = getattr(pos, 'last_sale_price', price_last)  # 最新价格
-        self.valuation = self.amount_total * self.price_last  # 持仓市值
+############################################################
 
 
 class Bar:
@@ -208,34 +236,17 @@ class TurnBar:
         return None
 
 
-class WorkLog:
-    def __init__(self, node: NodeBar, amount):
-        self.trade_type = 1 if amount > 0 else (-1 if amount < 0 else 0)
-        self.trade_amount = amount
-
-        # 节点信息
-        self.bar_datetime = node.datetime
-        self.bar_price = node.price
-        self.bar_value = node.value
-
-        # 映射信息
-        self.map_datetime = ''
-        self.map_price = 0.0
-        self.map_value = 0.0
-
-    def map(self, turn: TurnBar):
-        self.map_datetime = turn.datetime
-        self.map_price = turn.price
-        self.map_value = turn.value
-        return self
-
-
 class HistMarket:
-    def __init__(self):
+    def __init__(self, bars: list[Bar]):
+        pass
+
+    @staticmethod
+    def next_sma(pre_sma, price):
+        # fast = (pre_sma * (CFG.sma.fast - 1) + bar.close) / CFG.sma.fast
         pass
 
 
-class CurrMarket:
+class PresMarket:
     def __init__(self):
         self.base_price = 0.0  # 基准价格
         self.nodes = []  # 节点
@@ -285,8 +296,19 @@ class CurrMarket:
         #     pass
 
 
-class LiveStatus:
-    def __init__(self, his_mkt: HistMarket, cur_mkt: CurrMarket, pos: Pos):
+############################################################
+
+class Pos:
+    def __init__(self, pos, price_last: float = 0.0):
+        self.amount_avail = getattr(pos, 'enable_amount', 0.0)  # 可用持仓数量
+        self.amount_total = getattr(pos, 'amount', 0.0)  # 总持仓数量
+        self.price_cost = getattr(pos, 'cost_basis', 0.0)  # 成本价格
+        self.price_last = getattr(pos, 'last_sale_price', price_last)  # 最新价格
+        self.valuation = self.amount_total * self.price_last  # 持仓市值
+
+
+class State:
+    def __init__(self, his_mkt: HistMarket, cur_mkt: PresMarket, pos: Pos):
         self.node = cur_mkt.nodes[-1]  # 当前节点
         self.turn = cur_mkt.turns[-1]  # 当前拐点
         self.pos = pos  # 当前持仓
@@ -305,6 +327,26 @@ class LiveStatus:
         return self.node.sma().fast > self.node.sma().low
 
 
+class TradeLog:
+    def __init__(self, node: NodeBar, amount):
+        self.trade_type = 1 if amount > 0 else (-1 if amount < 0 else 0)
+        self.trade_amount = amount
+
+        # 节点信息
+        self.bar_datetime = node.datetime
+        self.bar_price = node.price
+        self.bar_value = node.value
+
+        # 映射信息
+        self.map_datetime = ''
+        self.map_price = 0.0
+        self.map_value = 0.0
+
+    def map(self, turn: TurnBar):
+        self.map_datetime = turn.datetime
+        self.map_price = turn.price
+        self.map_value = turn.value
+        return self
 
 
 class StockBroker:
@@ -328,7 +370,7 @@ class StockBroker:
         self.prices_sub.clear()
         self.ready = False
 
-    def prep(self, pos, mkt: CurrMarket):
+    def prep(self, pos, mkt: PresMarket):
         if mkt and mkt.nodes and mkt.turns:
             self.base_price = mkt.base_price
             self.node = mkt.nodes[-1]
@@ -392,7 +434,6 @@ class StockBroker:
 
     def __no_buy(self):
         """是否不买"""
-
 
         # 判断涨跌：节点SMA快线，是否超过节点SMA慢线
         if self.node.sma().fast <= self.node.sma().low:
@@ -473,8 +514,8 @@ class StockManager:
         self.symbol = symbol
         self.base_pos = None  # 基准仓位
         self.curr_pos = None  # 当前仓位
-        self.hist_mkt = LiveState()  # 历史行情
-        self.pres_mkt = CurrMarket()  # 当前行情
+        self.hist_mkt = State()  # 历史行情
+        self.pres_mkt = PresMarket()  # 当前行情
 
     def prep(self, bar, pos, his_data):
         self.base_pos = Pos(pos)
@@ -484,6 +525,10 @@ class StockManager:
         self.curr_pos = Pos(pos)
         self.pres_mkt.next(bar)
 
+
+############################################################
+# 全局配置
+CFG = StockConfig()
 
 # """
 ########################################################################################################################
@@ -515,7 +560,7 @@ def initialize(context):
     g.symbol = '512480.SS'
     set_universe(g.symbol)
 
-    config = Config(symbol=g.symbol)
+    config = StockConfig(symbol=g.symbol)
     # g.market = StockMarket(config)
     pass
 
