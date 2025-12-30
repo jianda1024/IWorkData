@@ -18,83 +18,60 @@ DISCLAIMER:
     For educational purposes only. Not investment advice.
     Use at your own risk. Author not liable for any losses.
 """
-from types import SimpleNamespace
 from typing import Self, Callable
-from dataclasses import dataclass, field
 
 
-@dataclass
-class PosConfig:
-    capital: float = 10000  # 仓位资金
-    upper_ratio: float = 1.5  # 仓位上限比例
-    lower_ratio: float = 0.9  # 仓位下限比例
-
-
-@dataclass
-class SmaConfig:
-    fast_period: int = 10
-    slow_period: int = 30
-    day_fast_period: int = 10
-    day_slow_period: int = 60
-
-
-@dataclass
-class MACDConfig:
-    fast_period: int = 12
-    slow_period: int = 26
-    sign_period: int = 9
-
-
-class TradeConfig:
-    def __init__(self, **kwargs):
-        self.min_swing_min = 0.004  # 拐点最小振幅比例
-        self.add_ratios = [0.50, 0.50, 0.00]  # 依次买入的比例
-        self.sub_ratios = [0.50, 0.30, 0.20]  # 依次卖出的比例
-        self.thresholds = [0.004, 0.006, 0.008]  # 涨跌阈值比例
-
+class Vary:
+    def update(self, **kwargs):
         for key, value in kwargs.items():
-            if hasattr(self, key):
-                setattr(self, key, value)
+            setattr(self, key, value)
 
 
-class StockConfig:
+class PosConfig(Vary):
     def __init__(self, **kwargs):
-        # 仓位
-        self._pos_upper = 1.5  # 仓位上限比例
-        self._pos_lower = 0.9  # 仓位下限比例
-        self._pos_capital = 10000  # 仓位资金
+        self.basic_quota = 10000  # 基础额度
+        self.upper_limit = 1.5  # 仓位上限(%)
+        self.lower_limit = 0.9  # 仓位下限(%)
+        self.update(**kwargs)
 
-        # SMA周期
-        self._sma_fast = 10
-        self._sma_slow = 30
-        self._sma_day_fast = 10
-        self._sma_day_slow = 60
 
-        # MACD周期
-        self._macd_fast = 12
-        self._macd_slow = 26
-        self._macd_sign = 9
+class SmaConfig(Vary):
+    def __init__(self, **kwargs):
+        self.min_fast = 10  # 快线周期(分钟)
+        self.min_slow = 30  # 慢线周期(分钟)
+        self.day_fast = 10  # 快线周期(天)
+        self.day_slow = 60  # 慢线周期(天)
+        self.update(**kwargs)
 
-        # 交易
-        self._trade_add_list = [0.50, 0.50, 0.00]  # 批次买入比例
-        self._trade_sub_list = [0.50, 0.30, 0.20]  # 批次卖出比例
-        self._trade_thresholds = [0.004, 0.006, 0.008]  # 涨跌阈值
 
-        # 波动
-        self._swing_min = 0.004  # 拐点最小振幅比例
-        self._swing_list = [0.004, 0.006, 0.008]  # 涨跌阈值
+class MACDConfig(Vary):
+    def __init__(self, **kwargs):
+        self.fast = 12  # 快线周期
+        self.slow = 26  # 慢线周期
+        self.sign = 9  # 信号线周期
+        self.update(**kwargs)
 
-        # 更新配置
-        for key, value in kwargs.items():
-            if hasattr(self, key):
-                setattr(self, key, value)
 
-        # 配置分组
-        self.pos = SimpleNamespace(capital=self._pos_capital, upper=self._pos_upper, lower=self._pos_lower)
-        self.sma = SimpleNamespace(fast=self._sma_fast, slow=self._sma_slow)
-        self.macd = SimpleNamespace(fast=self._macd_fast, slow=self._macd_slow, sign=self._macd_sign)
-        self.trade = SimpleNamespace(add_list=self._trade_add_list, sub_list=self._trade_sub_list)
-        self.swing = SimpleNamespace(swing_min=self._swing_min, swing_list=self._swing_list)
+class TradeConfig(Vary):
+    def __init__(self, **kwargs):
+        self.min_offset = 0.004  # 最小振幅差值(%)
+        self.add_quotas = [0.50, 0.50, 0.00]  # 加仓额度(%)
+        self.sub_quotas = [0.50, 0.30, 0.20]  # 减仓额度(%)
+        self.thresholds = [0.004, 0.006, 0.008]  # 涨跌阈值(%)
+        self.update(**kwargs)
+
+
+class StockConfig(Vary):
+    def __init__(self, **kwargs):
+        self.pos = PosConfig()
+        self.sma = SmaConfig()
+        self.macd = MACDConfig()
+        self.trade = TradeConfig()
+        self.update(**kwargs)
+
+
+# 全局配置
+CFG = StockConfig()
 
 
 ############################################################
@@ -122,9 +99,12 @@ class SMABar:
         self.slow = round(bar.close, 4)
         return self
 
-    def next(self, bar: Bar, pre_sma: Self):
-        fast = (pre_sma.fast * (CFG.sma.fast - 1) + bar.close) / CFG.sma.fast
-        slow = (pre_sma.slow * (CFG.sma.slow - 1) + bar.close) / CFG.sma.slow
+    def next(self, bar: Bar, pre_sma: Self, is_day=False):
+        fast_period = CFG.sma.day_fast if is_day else CFG.sma.min_fast
+        slow_period = CFG.sma.day_slow if is_day else CFG.sma.min_slow
+
+        fast = (pre_sma.fast * (fast_period - 1) + bar.close) / fast_period
+        slow = (pre_sma.slow * (slow_period - 1) + bar.close) / slow_period
         self.fast = round(fast, 4)
         self.slow = round(slow, 4)
         return self
@@ -205,22 +185,22 @@ class TurnBar:
         self.price = node.price
         self.value = node.value
 
-        self._threshold = round(base_price * CFG.swing.swing_min, 4)
+        self._threshold = round(base_price * CFG.trade.min_offset, 4)
         self._base_price = base_price
-        self._head_max = None
-        self._foot_min = None
+        self._node_max = None
+        self._node_min = None
 
-    def head_max(self, node: NodeBar):
+    def max_node(self, node: NodeBar):
         """到下一拐点前：最大的凸点"""
         if node.value - self.value > self._threshold:
-            if self._head_max is None or node.value > self._head_max.value:
-                self._head_max = node
+            if self._node_max is None or node.value > self._node_max.value:
+                self._node_max = node
 
-    def foot_min(self, node: NodeBar):
+    def min_node(self, node: NodeBar):
         """到下一拐点前：最小的凹点"""
         if self.value - node.value > self._threshold:
-            if self._foot_min is None or node.value < self._foot_min.value:
-                self._foot_min = node
+            if self._node_min is None or node.value < self._node_min.value:
+                self._node_min = node
 
     def next_turn(self, node: NodeBar):
         """下一拐点"""
@@ -229,10 +209,10 @@ class TurnBar:
             if abs(diff) > self._threshold:
                 self.turning = 1 if diff > 0 else -1
             return None
-        if self._head_max and self._head_max.value - node.value > self._threshold:
-            return self._head_max.turn(self._base_price)
-        if self._foot_min and node.value - self._foot_min.value > self._threshold:
-            return self._foot_min.turn(self._base_price)
+        if self._node_max and self._node_max.value - node.value > self._threshold:
+            return self._node_max.turn(self._base_price)
+        if self._node_min and node.value - self._node_min.value > self._threshold:
+            return self._node_min.turn(self._base_price)
         return None
 
 
@@ -283,10 +263,10 @@ class PresMarket:
         post = self.nodes[-1]
         if prev.value < node.value > post.value:
             node.turning = 1
-            self.turns[-1].head_max(node)
+            self.turns[-1].max_node(node)
         elif prev.value > node.value < post.value:
             node.turning = -1
-            self.turns[-1].foot_min(node)
+            self.turns[-1].min_node(node)
 
         # 计算拐点
         turn = self.turns[-1].next_turn(post)
@@ -527,8 +507,7 @@ class StockManager:
 
 
 ############################################################
-# 全局配置
-CFG = StockConfig()
+
 
 # """
 ########################################################################################################################
