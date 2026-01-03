@@ -18,6 +18,7 @@ DISCLAIMER:
     For educational purposes only. Not investment advice.
     Use at your own risk. Author not liable for any losses.
 """
+from collections import deque
 from typing import Self, Callable
 
 
@@ -37,10 +38,8 @@ class PosConfig(Vary):
 
 class SmaConfig(Vary):
     def __init__(self, **kwargs):
-        self.min_fast = 10  # 快线周期(分钟)
-        self.min_slow = 30  # 慢线周期(分钟)
-        self.day_fast = 10  # 快线周期(天)
-        self.day_slow = 60  # 慢线周期(天)
+        self.fast = 10  # 快线周期
+        self.slow = 30  # 慢线周期
         self.update(**kwargs)
 
 
@@ -69,13 +68,24 @@ class StockConfig(Vary):
         self.trade = TradeConfig()
         self.update(**kwargs)
 
-
-# 全局配置
-CFG = StockConfig()
+    def shift(self, level: str = 'default'):
+        match level:
+            case 'default':
+                self.sma = SmaConfig()
+            case 'day_bar':
+                self.sma = SmaConfig(fast=10, slow=60)
 
 
 ############################################################
 
+class StockContext:
+    def __init__(self):
+        self.symbol = ''  # 股票代码
+        self.start_price = 0.0  # 初始价格
+        self.start_amount = 0.0  # 初始持仓
+
+
+############################################################
 
 class Bar:
     def __init__(self, bar):
@@ -99,12 +109,9 @@ class SMABar:
         self.slow = round(bar.close, 4)
         return self
 
-    def next(self, bar: Bar, pre_sma: Self, is_day=False):
-        fast_period = CFG.sma.day_fast if is_day else CFG.sma.min_fast
-        slow_period = CFG.sma.day_slow if is_day else CFG.sma.min_slow
-
-        fast = (pre_sma.fast * (fast_period - 1) + bar.close) / fast_period
-        slow = (pre_sma.slow * (slow_period - 1) + bar.close) / slow_period
+    def next(self, bar: Bar, pre_sma: Self):
+        fast = (pre_sma.fast * (CFG.sma.fast - 1) + bar.close) / CFG.sma.fast
+        slow = (pre_sma.slow * (CFG.sma.slow - 1) + bar.close) / CFG.sma.slow
         self.fast = round(fast, 4)
         self.slow = round(slow, 4)
         return self
@@ -164,9 +171,9 @@ class NodeBar:
         self.value = self._sma.fast
         return self
 
-    def turn(self, base_price: float) -> Self:
+    def turn(self) -> Self:
         """转换为拐点，TurnBar"""
-        return TurnBar(self, base_price)
+        return TurnBar(self)
 
     def bar(self) -> Bar:
         return self._bar
@@ -179,14 +186,13 @@ class NodeBar:
 
 
 class TurnBar:
-    def __init__(self, node: NodeBar, base_price: float):
+    def __init__(self, node: NodeBar):
         self.datetime = node.datetime
         self.turning = node.turning
         self.price = node.price
         self.value = node.value
 
-        self._threshold = round(base_price * CFG.trade.min_offset, 4)
-        self._base_price = base_price
+        self._threshold = round(CTX.start_price * CFG.trade.min_offset, 4)
         self._node_max = None
         self._node_min = None
 
@@ -210,30 +216,35 @@ class TurnBar:
                 self.turning = 1 if diff > 0 else -1
             return None
         if self._node_max and self._node_max.value - node.value > self._threshold:
-            return self._node_max.turn(self._base_price)
+            return self._node_max.turn()
         if self._node_min and node.value - self._node_min.value > self._threshold:
-            return self._node_min.turn(self._base_price)
+            return self._node_min.turn()
         return None
 
 
 class HistMarket:
-    def __init__(self, bars: list[Bar]):
-        pass
+    def __init__(self):
+        self.nodes = []
 
-    @staticmethod
-    def next_sma(pre_sma, price):
-        # fast = (pre_sma * (CFG.sma.fast - 1) + bar.close) / CFG.sma.fast
-        pass
+    def calc(self, bars: list[Bar]):
+        if not bars:
+            return
+        CFG.shift("day_bar")
+        fist_node = NodeBar(bars[0]).init()
+        self.nodes.append(fist_node)
+        for bar in bars[1:]:
+            node = NodeBar(bar).next(self.nodes[-1])
+            self.nodes.append(node)
+        CFG.shift()
 
 
 class PresMarket:
     def __init__(self):
-        self.base_price = 0.0  # 基准价格
         self.nodes = []  # 节点
         self.turns = []  # 拐点
 
     def prep(self, bar):
-        self.base_price = round(bar.close, 4)
+        CTX.start_price = round(bar.close, 4)
         self.nodes.clear()
         self.turns.clear()
 
@@ -245,7 +256,7 @@ class PresMarket:
 
     def __init(self, bar):
         node = NodeBar(bar).init()
-        turn = node.turn(self.base_price)
+        turn = node.turn()
         self.nodes.append(node)
         self.turns.append(turn)
 
@@ -289,28 +300,65 @@ class Pos:
 
 class State:
     def __init__(self, his_mkt: HistMarket, cur_mkt: PresMarket, pos: Pos):
-        self.node = cur_mkt.nodes[-1]  # 当前节点
-        self.turn = cur_mkt.turns[-1]  # 当前拐点
-        self.pos = pos  # 当前持仓
-        self.lvl = -2  # 当前涨跌等级
+        self._his_node = his_mkt.nodes[-1]  # 历史节点(昨天)
+        self._cur_node = cur_mkt.nodes[-1]  # 当前节点(分钟)
+        self._cur_turn = cur_mkt.turns[-1]  # 当前拐点(分钟)
+        self._level = -2  # 当前涨跌等级
+        self._pos = pos  # 当前持仓
 
-    def is_gt_upper(self) -> bool:
+    def gt_upper_limit(self) -> bool:
         """仓位：是否超过上限"""
-        return self.pos.valuation >= CFG.pos.capital * CFG.pos.upper
+        return self._pos.valuation >= CFG.pos.basic_quota * CFG.pos.upper_limit
 
-    def is_gt_lower(self) -> bool:
+    def gt_lower_limit(self) -> bool:
         """仓位：是否超过下限"""
-        return self.pos.valuation >= CFG.pos.capital * CFG.pos.lower
+        return self._pos.valuation >= CFG.pos.basic_quota * CFG.pos.lower_limit
 
-    def is_sma_fall(self) -> bool:
-        """SMA："""
-        return self.node.sma().fast > self.node.sma().low
+    def is_min_rise(self) -> bool:
+        """分钟线：是否上涨"""
+        return self._cur_node.sma().fast > self._cur_node.sma().low
+
+    def is_min_fall(self) -> bool:
+        """分钟线：是否下跌"""
+        return self._cur_node.sma().fast < self._cur_node.sma().low
+
+    def is_day_rise(self) -> bool:
+        """日线：是否上涨"""
+        return self._his_node.sma().fast > self._his_node.sma().low
+
+    def is_day_fall(self) -> bool:
+        """日线：是否下跌"""
+        return self._his_node.sma().fast < self._his_node.sma().low
+
+    def is_rise_level(self) -> bool:
+        """是否达到上涨等级"""
+        return self.level() >= 0 and self._cur_turn.sma().fast < self._cur_node.sma().fast
+
+    def is_fall_level(self) -> bool:
+        """是否达到下跌等级"""
+        return self.level() >= 0 and self._cur_turn.sma().fast > self._cur_node.sma().fast
+
+    def level(self):
+        """当前涨跌等级"""
+        if self._level == -2:
+            self._level = -1
+            diff_value = abs(self._cur_node.sma().fast - self._cur_turn.sma().fast)
+            diff_ratio = round(diff_value / CTX.start_price, 4)
+            for threshold in reversed(CFG.trade.thresholds):
+                if diff_ratio > threshold:
+                    self._level = CFG.trade.thresholds.index(threshold)
+                    break
+        return self._level
 
 
 class TradeLog:
     def __init__(self, node: NodeBar, amount):
-        self.trade_type = 1 if amount > 0 else (-1 if amount < 0 else 0)
-        self.trade_amount = amount
+        if amount > 0:
+            self.trade_type = 'buy'
+            self.trade_amount = amount
+        else:
+            self.trade_type = 'sell'
+            self.trade_amount = -amount
 
         # 节点信息
         self.bar_datetime = node.datetime
@@ -332,23 +380,13 @@ class TradeLog:
 class StockBroker:
     def __init__(self, symbol: str):
         self.symbol = symbol  # 股票代码
-        self.base_amount = 0.0  # 基准持仓
-        self.base_price = 0.0  # 基准价格
         self.prices_add = []  # 已加仓价格
         self.prices_sub = []  # 已减仓价格
 
-        # 当前信息
-        self.ready = False  # 是否就绪
-        self.node = None  # 当前节点
-        self.turn = None  # 当前拐点
-        self.pos = None  # 当前持仓
-        self.lvl = -2  # 当前涨跌等级
+        self.trade_logs = deque(maxlen=1000)  # 交易日志
 
     def init(self, pos):
         self.base_amount = Pos(pos).amount_avail
-        self.prices_add.clear()
-        self.prices_sub.clear()
-        self.ready = False
 
     def prep(self, pos, mkt: PresMarket):
         if mkt and mkt.nodes and mkt.turns:
@@ -412,16 +450,6 @@ class StockBroker:
         amount = -min(self.pos.amount_avail - 100, amount)
         order_func(self.symbol, amount)
 
-    def __no_buy(self):
-        """是否不买"""
-
-        # 判断涨跌：节点SMA快线，是否超过节点SMA慢线
-        if self.node.sma().fast <= self.node.sma().low:
-            return True
-
-        # 判断涨跌：节点SMA快线，是否超过拐点SMA快线
-        return self.node.sma().fast <= self.turn.sma().fast
-
     def __is_buy(self):
         """是否买入"""
         # 判断涨幅超过阈值
@@ -477,17 +505,6 @@ class StockBroker:
         # 决定卖出
         return True
 
-    def __get_lvl(self):
-        if self.lvl == -2:
-            self.lvl = -1
-            diff_value = abs(self.node.sma().fast - self.turn.sma().fast)
-            diff_ratio = round(diff_value / self.base_price, 3)
-            for level in range(len(CFG.thresholds) - 1, -1, -1):
-                if diff_ratio > CFG.thresholds[level]:
-                    self.lvl = level
-                    return self.lvl
-        return self.lvl
-
 
 class StockManager:
     def __init__(self, symbol):
@@ -507,7 +524,11 @@ class StockManager:
 
 
 ############################################################
-
+# 全局配置
+CFG = StockConfig()
+# 上下文
+CTX = StockContext()
+############################################################
 
 # """
 ########################################################################################################################
