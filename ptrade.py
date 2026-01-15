@@ -27,6 +27,23 @@ from typing import Self, Callable
 
 
 class Config:
+    def __init__(self):
+        self.Pos: Config._Pos = Config._Pos()
+        self.Sma: Config._Sma = Config._Sma()
+        self.Macd: Config._Macd = Config._Macd()
+        self.Rise: Config._Rise = Config._Rise()
+        self.Fall: Config._Fall = Config._Fall()
+        self.Wave: Config._Wave = Config._Wave()
+
+    def shift(self, level: str = 'default'):
+        match level:
+            case 'default':
+                self.Sma.fast = 10
+                self.Sma.slow = 30
+            case 'day_bar':
+                self.Sma.fast = 5
+                self.Sma.slow = 10
+
     class _Pos:
         def __init__(self):
             self.base_principal = 8000  # 基础资金
@@ -60,47 +77,30 @@ class Config:
         def __init__(self):
             self.min_swing = 0.003  # 最小摆动（比例）
 
-    def __init__(self):
-        self.Pos: Config._Pos = Config._Pos()
-        self.Sma: Config._Sma = Config._Sma()
-        self.Macd: Config._Macd = Config._Macd()
-        self.Rise: Config._Rise = Config._Rise()
-        self.Fall: Config._Fall = Config._Fall()
-        self.Wave: Config._Wave = Config._Wave()
 
-    def shift(self, level: str = 'default'):
-        match level:
-            case 'default':
-                self.Sma.fast = 10
-                self.Sma.slow = 30
-            case 'day_bar':
-                self.Sma.fast = 5
-                self.Sma.slow = 10
+############################################################
+class Bar:
+    def __init__(self, bar):
+        self.datetime = bar.datetime  # 时间
+        self.volume = round(bar.volume, 2)  # 交易量
+        self.money = round(bar.money, 2)  # 交易金额
+        self.price = round(bar.price, 4)  # 最新价
+        self.close = round(bar.close, 4)  # 收盘价
+        self.open = round(bar.open, 4)  # 开盘价
+        self.high = round(bar.high, 4)  # 最高价
+        self.low = round(bar.low, 4)  # 最低价
 
-
-class NodeBar:
-    class _Bar:
-        def __init__(self, bar):
-            self.datetime = bar.datetime  # 时间
-            self.volume = round(bar.volume, 2)  # 交易量
-            self.money = round(bar.money, 2)  # 交易金额
-            self.price = round(bar.price, 4)  # 最新价
-            self.close = round(bar.close, 4)  # 收盘价
-            self.open = round(bar.open, 4)  # 开盘价
-            self.high = round(bar.high, 4)  # 最高价
-            self.low = round(bar.low, 4)  # 最低价
-
-    class _Sma:
+    class Sma:
         def __init__(self):
             self.fast = 0.0  # SMA快线
             self.slow = 0.0  # SMA慢线
 
-        def first(self, bar: NodeBar._Bar):
+        def first(self, bar: Bar):
             self.fast = round(bar.close, 4)
             self.slow = round(bar.close, 4)
             return self
 
-        def next(self, bar: NodeBar._Bar, pre_sma: Self):
+        def next(self, bar: Bar, pre_sma: Self):
             fast = (pre_sma.fast * (CFG.Sma.fast - 1) + bar.close) / CFG.Sma.fast
             slow = (pre_sma.slow * (CFG.Sma.slow - 1) + bar.close) / CFG.Sma.slow
             self.fast = round(fast, 4)
@@ -115,7 +115,7 @@ class NodeBar:
             """均线下跌"""
             return self.fast <= self.slow
 
-    class _Macd:
+    class Macd:
         def __init__(self):
             self.ema_fast = 0.0
             self.ema_slow = 0.0
@@ -123,12 +123,12 @@ class NodeBar:
             self.dea = 0.0
             self.macd = 0.0
 
-        def first(self, bar: NodeBar._Bar):
+        def first(self, bar: Bar):
             self.ema_fast = round(bar.close, 4)
             self.ema_slow = round(bar.close, 4)
             return self
 
-        def next(self, bar: NodeBar._Bar, pre_macd: Self):
+        def next(self, bar: Bar, pre_macd: Self):
             self.ema_fast = self._ema(bar.close, CFG.Macd.fast, pre_macd.ema_fast)
             self.ema_slow = self._ema(bar.close, CFG.Macd.slow, pre_macd.ema_slow)
             self.dif = round(self.ema_fast - self.ema_slow, 4)
@@ -142,17 +142,25 @@ class NodeBar:
             ema = alpha * price + (1 - alpha) * pre_ema
             return round(ema, 4)
 
-    class _Mark:
+    class Node:
         def __init__(self):
             # 涨跌等级，标记在节点上，用于避免重复计算
             self.rise_level = -2
             self.fall_level = -2
 
+    class Turn:
+        def __init__(self):
+            # 涨跌批次，标记在拐点上，用于避免重复交易
+            self.rise_lots = CFG.Rise.add_quotas.copy()
+            self.fall_lots = CFG.Fall.sub_quotas.copy()
+
+
+class NodeBar:
     def __init__(self, bar):
-        self.Bar: NodeBar._Bar = NodeBar._Bar(bar)
-        self.Sma: NodeBar._Sma = NodeBar._Sma()
-        self.Macd: NodeBar._Macd = NodeBar._Macd()
-        self.Mark: NodeBar._Mark = NodeBar._Mark()
+        self.Bar: Bar = Bar(bar)
+        self.Sma: Bar.Sma = Bar.Sma()
+        self.Macd: Bar.Macd = Bar.Macd()
+        self.Mark: Bar.Node = Bar.Node()
 
         self.datetime = self.Bar.datetime.strftime('%Y-%m-%d %H:%M:%S')
         self.price = self.Bar.price
@@ -180,14 +188,8 @@ class NodeBar:
 
 
 class TurnBar:
-    class _Mark:
-        def __init__(self):
-            # 涨跌批次，标记在拐点上，用于避免重复交易
-            self.rise_lots = CFG.Rise.add_quotas.copy()
-            self.fall_lots = CFG.Fall.sub_quotas.copy()
-
     def __init__(self, node: NodeBar):
-        self.Mark: TurnBar._Mark = TurnBar._Mark()
+        self.Mark: Bar.Turn = Bar.Turn()
         self.datetime = node.datetime
         self.turn_sma = node.turn_sma
         self.turn_val = node.turn_val
@@ -220,29 +222,143 @@ class TurnBar:
         return None
 
 
-class Handler(ABC):
-    @abstractmethod
-    def hub(self) -> DataHub:
-        """数据集"""
-        pass
+############################################################
+class Pos:
+    def __init__(self, pos, price_last=0.0):
+        self.avail_amount = getattr(pos, 'enable_amount', 0.0)  # 可用持仓数量
+        self.total_amount = getattr(pos, 'amount', 0.0)  # 总持仓数量
+        self.cost_price = getattr(pos, 'cost_basis', 0.0)  # 成本价格
+        self.last_price = getattr(pos, 'last_sale_price', price_last)  # 最新价格
+        self.valuation = round(self.total_amount * self.last_price, 2)  # 市值
+        self.principal = round(self.total_amount * self.cost_price, 2)  # 本金
 
-    @abstractmethod
-    def bar(self) -> tuple[NodeBar, NodeBar, TurnBar]:
-        """最新日线节点、最新分钟线节点、最新分钟线拐点"""
-        pass
+    def over_limit(self) -> bool:
+        """超过亏损上限 or 超过本金上限"""
+        if self.principal - self.valuation >= CFG.Pos.base_principal * CFG.Pos.loss_limit:
+            return True
+        return self.principal > CFG.Pos.base_principal * CFG.Pos.cost_limit
+
+    def has_no_amount(self) -> bool:
+        """没有可用持仓"""
+        return self.avail_amount <= self.remain_amount()
+
+    def remain_amount(self) -> int:
+        """获取保留的股票数量"""
+        if self.total_amount > self.avail_amount:
+            return 0
+        if self.valuation - self.principal > CFG.Pos.base_principal * CFG.Pos.gain_limit:
+            return 0
+        return 100
+
+
+class DailyBus:
+    def __init__(self):
+        self.nodes: list[NodeBar] = []  # 节点集合
+
+    def prepare(self, bars):
+        CFG.shift("day_bar")
+        self.nodes.clear()
+        self.nodes.append(NodeBar(bars[0]).first())
+        for bar in bars[1:]:
+            node = NodeBar(bar).next(self.nodes[-1])
+            self.nodes.append(node)
+        CFG.shift()
+
+
+class TodayBus:
+    def __init__(self):
+        self.nodes: list[NodeBar] = []  # 节点集合
+        self.turns: list[TurnBar] = []  # 拐点集合
+        self.base_amount = 0.0  # 基准持仓
+        self.base_price = 0.0  # 基准价格
+
+    def prepare(self, bar):
+        self.base_price = round(bar.close, 4)
+        self.nodes.clear()
+        self.turns.clear()
+
+    def first(self, bar, pos):
+        self.base_amount = pos.avail_amount
+        node = NodeBar(bar).first()
+        turn = node.turn()
+        self.nodes.append(node)
+        self.turns.append(turn)
+
+    def next(self, bar):
+        node = NodeBar(bar).next(self.nodes[-1])
+        if node.turn_sma == self.nodes[-1].turn_sma:
+            return
+        self.nodes.append(node)
+        if len(self.nodes) < 3:
+            return
+
+        # 最小振幅价格差
+        threshold = round(self.base_price * CFG.Wave.min_swing, 4)
+
+        # 计算凹凸点
+        prev = self.nodes[-3]
+        node = self.nodes[-2]
+        post = self.nodes[-1]
+        if prev.turn_sma < node.turn_sma > post.turn_sma:
+            node.turn_val = 1
+            self.turns[-1].max_node(node, threshold)
+        elif prev.turn_sma > node.turn_sma < post.turn_sma:
+            node.turn_val = -1
+            self.turns[-1].min_node(node, threshold)
+
+        # 计算拐点
+        turn = self.turns[-1].next_turn(post, threshold)
+        self.turns.append(turn) if turn else None
+
+
+class StockData:
+    def __init__(self, code):
+        self.DailyBus: DailyBus = DailyBus()  # 历史数据
+        self.TodayBus: TodayBus = TodayBus()  # 当天数据
+        self.Pos: Pos | None = None  # 当前仓位
+        self._status = 0  # 状态：0初始、1启动、2就绪
+        self.code = code  # 股票代码
+
+    def prepare(self, bars):
+        bar = bars[-1]
+        self.DailyBus.prepare(bars)
+        self.TodayBus.prepare(bar)
+        self._status = 1
+        return self
+
+    def running(self, bar, pos):
+        self.Pos = Pos(pos)
+        if self._status == 2:
+            self.TodayBus.next(bar)
+            return self
+        if self._status == 1:
+            self.TodayBus.first(bar, self.Pos)
+            self._status = 2
+            return self
+        if self._status == 0:
+            self.prepare([bar])
+        return self
+
+    def bars(self) -> tuple[NodeBar, NodeBar, TurnBar]:
+        return self.DailyBus.nodes[-1], self.TodayBus.nodes[-1], self.TodayBus.turns[-1]
+
+
+############################################################
+class TurnBroker:
+    def __init__(self, data: StockData):
+        self.data = data
 
     def trade(self, func: Callable):
         """执行交易"""
-        if self.__is_buy():
-            self.__do_buy(func)
+        if self.is_buy():
+            self.do_buy(func)
             return
-        if self.__is_sell():
-            self.__do_sell(func)
+        if self.is_sell():
+            self.do_sell(func)
             return
 
-    def __is_buy(self):
-        """是否买入"""
-        yest, node, turn = self.bar()
+    def is_buy(self) -> bool:
+        yest, node, turn = self.data.bars()
         # 非波谷
         if turn.turn_val != -1:
             return False
@@ -250,7 +366,7 @@ class Handler(ABC):
         if node.Bar.datetime.time() < time(9, 40, 0):
             return False
         # 超过亏损上限 or 超过本金上限
-        if self.hub().CurrPos.over_limit():
+        if self.data.Pos.over_limit():
             return False
         # 日线下跌 or 分钟线下跌
         if yest.Sma.is_fall() or node.Sma.is_fall():
@@ -259,21 +375,16 @@ class Handler(ABC):
         level = self.__rise_level()
         if level == -1 or turn.Mark.rise_lots[level] == 0:
             return False
-        # 只是小幅下跌
-        # if self.__is_light_fall():
-            return False
-
         # 决定买入
         return True
 
-    def __is_sell(self):
-        """是否卖出"""
-        yest, node, turn = self.bar()
+    def is_sell(self) -> bool:
+        yest, node, turn = self.data.bars()
         # 非波峰
         if turn.turn_val != 1:
             return False
         # 没有可用持仓
-        if self.hub().CurrPos.has_no_amount():
+        if self.data.Pos.has_no_amount():
             return False
         # 分钟线上涨
         if node.Sma.is_rise():
@@ -285,43 +396,43 @@ class Handler(ABC):
         # 决定卖出
         return True
 
-    def __do_buy(self, func: Callable):
+    def do_buy(self, func: Callable):
         """执行买入"""
-        _, _, turn = self.bar()
+        _, _, turn = self.data.bars()
         level = self.__rise_level()
         lots = turn.Mark.rise_lots
-        buy_amount = CFG.Pos.base_principal / self.hub().base_price * lots[level]
+        buy_amount = CFG.Pos.base_principal / self.data.TodayBus.base_price * lots[level]
         amount = round(buy_amount / 100) * 100
 
         # 执行买入
-        func(self.hub().code, amount)
+        func(self.data.code, amount)
         lots[level] = 0.0
-        # del self.hub().HereBus.turns[:-1]
 
-    def __do_sell(self, func: Callable):
+    def do_sell(self, func: Callable):
         """执行卖出"""
-        _, _, turn = self.bar()
+        _, _, turn = self.data.bars()
         level = self.__fall_level()
         lots = turn.Mark.fall_lots
 
         # 最小数量：根据基准本金
-        min_qty = CFG.Pos.base_principal / self.hub().base_price * lots[level]
+        today = self.data.TodayBus
+        min_qty = CFG.Pos.base_principal / today.base_price * lots[level]
         # 减仓数量：根据当日初始可用持仓
-        cur_qty = self.hub().base_amount * lots[level]
+        cur_qty = today.base_amount * lots[level]
         # 避免低仓位时，还分多次减仓
         sell_qty = max(min_qty, cur_qty)
         # 不得超过当前可用持仓
-        sell_amount = min(sell_qty, self.hub().CurrPos.avail_amount)
+        sell_amount = min(sell_qty, self.data.Pos.avail_amount)
         # 调整到100的倍数，并留下底仓
-        amount = round(sell_amount / 100) * 100 - self.hub().CurrPos.remain_amount()
+        amount = round(sell_amount / 100) * 100 - self.data.Pos.remain_amount()
 
         # 执行卖出
-        func(self.hub().code, -amount)
+        func(self.data.code, -amount)
         lots[level] = 0.0
 
     def __rise_level(self):
         """当前上涨等级"""
-        _, node, _ = self.bar()
+        _, node, _ = self.data.bars()
         mark = node.Mark
         if mark.rise_level == -2:
             mark.rise_level = self.__calc_level(CFG.Rise.thresholds)
@@ -329,7 +440,7 @@ class Handler(ABC):
 
     def __fall_level(self):
         """当前下跌等级"""
-        _, node, _ = self.bar()
+        _, node, _ = self.data.bars()
         mark = node.Mark
         if mark.fall_level == -2:
             mark.fall_level = self.__calc_level(CFG.Fall.thresholds)
@@ -337,172 +448,25 @@ class Handler(ABC):
 
     def __calc_level(self, thresholds):
         """计算涨跌等级"""
-        _, node, turn = self.bar()
+        _, node, turn = self.data.bars()
         diff_value = abs(node.turn_sma - turn.turn_sma)
-        diff_ratio = round(diff_value / self.hub().base_price, 4)
+        diff_ratio = round(diff_value / self.data.TodayBus.base_price, 4)
         for threshold in reversed(thresholds):
             if diff_ratio > threshold:
                 return thresholds.index(threshold)
         return -1
 
-    def __is_light_fall(self):
-        """是否只是小幅下跌"""
-        turns = self.hub().HereBus.turns
-        if len(turns) < 3:
-            return False
-        max_sma = max(turn.turn_sma for turn in turns)
-        if max_sma - turns[-1].turn_sma < self.hub().base_price * CFG.Rise.early_decline:
-            return True
-        return False
 
-
-class DataHub(Handler):
-    class _AwayBus:
-        def __init__(self):
-            self.nodes: list[NodeBar] = []
-
-        def prepare(self, bars):
-            CFG.shift("day_bar")
-            self.nodes.clear()
-            self.nodes.append(NodeBar(bars[0]).first())
-            for bar in bars[1:]:
-                node = NodeBar(bar).next(self.nodes[-1])
-                self.nodes.append(node)
-            CFG.shift()
-
-    class _HereBus:
-        def __init__(self):
-            self.nodes: list[NodeBar] = []
-            self.turns: list[TurnBar] = []
-            self.base_price = 0.0
-
-        def prepare(self, base_price):
-            self.base_price = base_price
-            self.nodes.clear()
-            self.turns.clear()
-
-        def first(self, bar):
-            node = NodeBar(bar).first()
-            turn = node.turn()
-            self.nodes.append(node)
-            self.turns.append(turn)
-
-        def next(self, bar):
-            node = NodeBar(bar).next(self.nodes[-1])
-            if node.turn_sma == self.nodes[-1].turn_sma:
-                return
-            self.nodes.append(node)
-            if len(self.nodes) < 3:
-                return
-
-            # 最小振幅价格差
-            threshold = round(self.base_price * CFG.Wave.min_swing, 4)
-
-            # 计算凹凸点
-            prev = self.nodes[-3]
-            node = self.nodes[-2]
-            post = self.nodes[-1]
-            if prev.turn_sma < node.turn_sma > post.turn_sma:
-                node.turn_val = 1
-                self.turns[-1].max_node(node, threshold)
-            elif prev.turn_sma > node.turn_sma < post.turn_sma:
-                node.turn_val = -1
-                self.turns[-1].min_node(node, threshold)
-
-            # 计算拐点
-            turn = self.turns[-1].next_turn(post, threshold)
-            self.turns.append(turn) if turn else None
-
-    class _CurrPos:
-        def __init__(self):
-            self.avail_amount = 0.0  # 可用持仓数量
-            self.total_amount = 0.0  # 总持仓数量
-            self.cost_price = 0.0  # 成本价格
-            self.last_price = 0.0  # 最新价格
-            self.valuation = 0.0  # 市值
-            self.principal = 0.0  # 本金
-
-        def update(self, pos, price_last=0.0):
-            self.avail_amount = getattr(pos, 'enable_amount', 0.0)
-            self.total_amount = getattr(pos, 'amount', 0.0)
-            self.cost_price = getattr(pos, 'cost_basis', 0.0)
-            self.last_price = getattr(pos, 'last_sale_price', price_last)
-            self.valuation = round(self.total_amount * self.last_price, 2)
-            self.principal = round(self.total_amount * self.cost_price, 2)
-
-        def over_limit(self) -> bool:
-            """超过亏损上限 or 超过本金上限"""
-            if self.principal - self.valuation >= CFG.Pos.base_principal * CFG.Pos.loss_limit:
-                return True
-            return self.principal > CFG.Pos.base_principal * CFG.Pos.cost_limit
-
-        def has_no_amount(self) -> bool:
-            """没有可用持仓"""
-            return self.avail_amount <= self.remain_amount()
-
-        def remain_amount(self) -> int:
-            """获取保留的股票数量"""
-            if self.total_amount > self.avail_amount:
-                return 0
-            if self.valuation - self.principal > CFG.Pos.base_principal * CFG.Pos.gain_limit:
-                return 0
-            return 100
-
-    def __init__(self, code):
-        self.AwayBus: DataHub._AwayBus = DataHub._AwayBus()  # 历史数据
-        self.HereBus: DataHub._HereBus = DataHub._HereBus()  # 当天数据
-        self.CurrPos: DataHub._CurrPos = DataHub._CurrPos()  # 当前仓位
-
-        self.code = code  # 股票代码
-        self.base_price = 0.0  # 基准价格
-        self.base_amount = 0.0  # 基准持仓
-        self._status = 0  # 状态：0初始、1启动、2就绪
-
-    def prepare(self, bars):
-        self.base_price = round(bars[-1].close, 4)
-        self.AwayBus.prepare(bars)
-        self.HereBus.prepare(self.base_price)
-        self._status = 1
-        return self
-
-    def running(self, bar, pos):
-        self.CurrPos.update(pos)
-        if self._status == 2:
-            self.HereBus.next(bar)
-            return self
-        if self._status == 1:
-            self.base_amount = self.CurrPos.avail_amount
-            self.HereBus.first(bar)
-            self._status = 2
-            return self
-        if self._status == 0:
-            self.prepare([bar])
-        return self
-
-    def hub(self) -> DataHub:
-        return self
-
-    def bar(self) -> tuple[NodeBar, NodeBar, TurnBar]:
-        return self.AwayBus.nodes[-1], self.HereBus.nodes[-1], self.HereBus.turns[-1]
-
-
-############################################################
 class StockMarket:
     def __init__(self):
-        self.hubs: dict[str, DataHub] = {}
+        self.datas: dict[str, StockData] = {}
 
     def prepare(self, code, bars):
-        self.hubs[code] = DataHub(code).prepare(bars)
+        self.datas[code] = StockData(code).prepare(bars)
 
     def running(self, code, bar, pos):
-        hub = self.hubs.get(code).running(bar, pos)
-        hub.trade(order)
-
-    def delete(self, symbol):
-        del self.hubs[symbol]
-
-    def clear(self):
-        self.hubs.clear()
+        data = self.datas.get(code).running(bar, pos)
+        TurnBroker(data).trade(order)
 
 
 """
