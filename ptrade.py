@@ -25,6 +25,191 @@ from datetime import time
 from types import SimpleNamespace
 from typing import Self, Callable, Type
 
+import pandas as pd
+
+
+class K:
+    class Pos:
+        base_funds = 'pos.base_funds'
+        cost_limit = 'pos.cost_limit'
+        loss_limit = 'pos.loss_limit'
+        gain_limit = 'pos.gain_limit'
+
+        avail_amount = 'pos.avail_amount'
+        total_amount = 'pos.total_amount'
+        cost_price = 'pos.cost_price'
+        last_price = 'pos.last_price'
+
+    class Bar:
+        datetime = 'bar.datetime'
+        volume = 'bar.volume'
+        price = 'bar.price'
+        close = 'bar.close'
+        open = 'bar.open'
+        high = 'bar.high'
+        low = 'bar.low'
+
+    class Ema:
+        fast = 'ema.fast'
+        slow = 'ema.slow'
+
+    class Smma:
+        fast = 'smma.fast'
+        slow = 'smma.slow'
+
+    class Macd:
+        fast = 'macd.fast'
+        slow = 'macd.slow'
+        sign = 'macd.sign'
+
+        dif = 'macd.dif'
+        dea = 'macd.dea'
+        macd = 'macd.macd'
+
+    class Rise:
+        add_quotas = 'rise.add_quotas'
+        thresholds = 'rise.thresholds'
+        macd_limit = 'rise.macd_limit'
+
+    class Fall:
+        cut_quotas = 'fall.cut_quotas'
+        thresholds = 'fall.thresholds'
+
+    class Wave:
+        min_turn = 'wave.min_turn'
+        apex_val = 'wave.apex_val'
+        turn_val = 'wave.turn_val'
+        rise_lvl = 'wave.rise_lvl'
+        fall_lvl = 'wave.fall_lvl'
+
+
+class Config:
+    def __init__(self):
+        self.cfg = {
+            # 仓位
+            K.Pos.base_funds: 8000,  # 基础资金
+            K.Pos.cost_limit: 1.50,  # 成本上限（比例）
+            K.Pos.loss_limit: 0.15,  # 亏损上限（比例）
+            K.Pos.gain_limit: 0.05,  # 盈利上限（比例）
+
+            # 指数移动平均线
+            K.Ema.fast: 10,
+            K.Ema.slow: 30,
+
+            # 平滑移动平均线
+            K.Smma.fast: 10,
+            K.Smma.slow: 30,
+
+            # 指数平滑异同移动平均线
+            K.Macd.fast: 13,
+            K.Macd.slow: 60,
+            K.Macd.sign: 5,
+
+            # 加仓
+            K.Rise.add_quotas: [0.300],  # 加仓额度（比例）
+            K.Rise.thresholds: [0.004],  # 加仓阈值（比例）
+            K.Rise.macd_limit: 0.0015,  # macd下限（比例）
+
+            # 减仓
+            K.Fall.cut_quotas: [0.300, 0.400, 0.300],  # 减仓额度（比例）
+            K.Fall.thresholds: [0.004, 0.007, 0.010],  # 减仓阈值（比例）
+
+            # 波动
+            K.Wave.min_turn: 0.04  # 最小摆动（比例）
+        }
+
+    def set(self, key, value):
+        self.cfg[key] = value
+        return self
+
+    def df(self) -> pd.DataFrame:
+        return pd.DataFrame([self.cfg])
+
+
+class PosBar:
+    def __init__(self, pos, bar):
+        self.datetime_str = bar.datetime.strftime('%Y-%m-%d %H:%M:%S')
+        self.avail_amount = getattr(pos, 'enable_amount', 0.0)
+        self.total_amount = getattr(pos, 'amount', 0.0)
+        self.cost_price = getattr(pos, 'cost_basis', 0.0)
+        self.last_price = getattr(pos, 'last_sale_price', 0.0)
+
+    def df(self):
+        row_dict = {
+            K.Pos.avail_amount: self.avail_amount,
+            K.Pos.total_amount: self.total_amount,
+            K.Pos.cost_price: self.cost_price,
+            K.Pos.last_price: self.last_price,
+        }
+        return pd.DataFrame([row_dict], index=[self.datetime_str])
+
+
+class DayBar:
+    def __init__(self, bar):
+        self.time_str = bar.datetime.strftime('%Y-%m-%d %H:%M:%S')
+        self.datetime = bar.datetime  # 时间
+        self.volume = round(bar.volume, 2)  # 交易量
+        self.money = round(bar.money, 2)  # 交易金额
+        self.price = round(bar.price, 4)  # 最新价
+        self.close = round(bar.close, 4)  # 收盘价
+        self.open = round(bar.open, 4)  # 开盘价
+        self.high = round(bar.high, 4)  # 最高价
+        self.low = round(bar.low, 4)  # 最低价
+
+    def df(self):
+        row_dict = {
+            K.Bar.datetime: self.datetime,
+            K.Bar.volume: self.volume,
+            K.Bar.price: self.price,
+            K.Bar.close: self.close,
+            K.Bar.open: self.open,
+            K.Bar.high: self.high,
+            K.Bar.low: self.low,
+
+            K.Smma.fast: None,
+            K.Smma.slow: None,
+        }
+        return pd.DataFrame([row_dict], index=[self.time_str])
+
+
+class MinBar:
+    def __init__(self, bar):
+        self.time_str = bar.datetime.strftime('%Y-%m-%d %H:%M:%S')
+        self.datetime = bar.datetime  # 时间
+        self.volume = round(bar.volume, 2)  # 交易量
+        self.money = round(bar.money, 2)  # 交易金额
+        self.price = round(bar.price, 4)  # 最新价
+        self.close = round(bar.close, 4)  # 收盘价
+        self.open = round(bar.open, 4)  # 开盘价
+        self.high = round(bar.high, 4)  # 最高价
+        self.low = round(bar.low, 4)  # 最低价
+
+    def df(self):
+        row_dict = {
+            K.Bar.datetime: self.datetime,
+            K.Bar.volume: self.volume,
+            K.Bar.price: self.price,
+            K.Bar.close: self.close,
+            K.Bar.open: self.open,
+            K.Bar.high: self.high,
+            K.Bar.low: self.low,
+
+            K.Ema.fast: None,
+            K.Ema.slow: None,
+
+            K.Macd.fast: None,
+            K.Macd.slow: None,
+            K.Macd.dif: None,
+            K.Macd.dea: None,
+            K.Macd.macd: None,
+
+            K.Wave.apex_val: 0,
+            K.Wave.turn_val: 0,
+            K.Wave.rise_lvl: -2,
+            K.Wave.fall_lvl: -2,
+        }
+        return pd.DataFrame([row_dict], index=[self.time_str])
+
 
 class Config:
     def __init__(self):
@@ -539,32 +724,6 @@ def init() -> list[StockBus]:
 
 
 ############################################################
-
-"""
-import logging
-from ptrade import GlobalVars
-
-log = logging.getLogger()
-g = GlobalVars()
-
-
-def set_universe(symbol):
-    g.symbol = symbol.replace('SS', 'SH')
-    pass
-
-
-def order(symbol, amount):
-    pass
-
-
-def get_history(**kwargs):
-    pass
-def get_positions():
-    pass
-
-"""
-
-
 def initialize(context):
     """启动时执行一次"""
     buses = init()
