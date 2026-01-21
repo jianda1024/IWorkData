@@ -29,6 +29,8 @@ import pandas as pd
 
 
 class K:
+    datetime = 'datetime'
+
     class Pos:
         base_funds = 'pos.base_funds'
         cost_limit = 'pos.cost_limit'
@@ -41,8 +43,8 @@ class K:
         last_price = 'pos.last_price'
 
     class Bar:
-        datetime = 'bar.datetime'
         volume = 'bar.volume'
+        money = 'bar.money'
         price = 'bar.price'
         close = 'bar.close'
         open = 'bar.open'
@@ -66,6 +68,11 @@ class K:
         dea = 'macd.dea'
         macd = 'macd.macd'
 
+    class Turn:
+        apex_val = 'turn.apex_val'
+        turn_val = 'turn.turn_val'
+        prev_idx = 'turn.prev_idx'
+
     class Rise:
         add_quotas = 'rise.add_quotas'
         thresholds = 'rise.thresholds'
@@ -77,10 +84,175 @@ class K:
 
     class Wave:
         min_turn = 'wave.min_turn'
-        apex_val = 'wave.apex_val'
-        turn_val = 'wave.turn_val'
         rise_lvl = 'wave.rise_lvl'
         fall_lvl = 'wave.fall_lvl'
+
+
+class Pos:
+    def __init__(self, pos, bar):
+        self.datetime_str = bar.datetime.strftime('%Y-%m-%d %H:%M:%S')
+        self.avail_amount = getattr(pos, 'enable_amount', 0.0)
+        self.total_amount = getattr(pos, 'amount', 0.0)
+        self.cost_price = getattr(pos, 'cost_basis', 0.0)
+        self.last_price = getattr(pos, 'last_sale_price', 0.0)
+        self.datetime = bar.datetime
+
+    def pos_df(self):
+        pos_dict = {
+            K.datetime: self.datetime,
+            K.Pos.avail_amount: self.avail_amount,
+            K.Pos.total_amount: self.total_amount,
+            K.Pos.cost_price: self.cost_price,
+            K.Pos.last_price: self.last_price,
+        }
+        return pd.DataFrame([pos_dict], index=[self.datetime_str])
+
+
+class Bar:
+    def __init__(self, bar):
+        self.time_str = bar.datetime.strftime('%Y-%m-%d %H:%M:%S')
+        self.datetime = bar.datetime  # 时间
+        self.volume = round(bar.volume, 2)  # 交易量
+        self.money = round(bar.money, 2)  # 交易金额
+        self.price = round(bar.price, 4)  # 最新价
+        self.close = round(bar.close, 4)  # 收盘价
+        self.open = round(bar.open, 4)  # 开盘价
+        self.high = round(bar.high, 4)  # 最高价
+        self.low = round(bar.low, 4)  # 最低价
+
+    def bar_dict(self):
+        return {
+            K.datetime: self.datetime,
+            K.Bar.volume: self.volume,
+            K.Bar.money: self.money,
+            K.Bar.price: self.price,
+            K.Bar.close: self.close,
+            K.Bar.open: self.open,
+            K.Bar.high: self.high,
+            K.Bar.low: self.low,
+        }
+
+    def day_df(self):
+        bar_dict = self.bar_dict()
+        day_dict = {
+            K.Smma.fast: None,
+            K.Smma.slow: None,
+        }
+        row_dict = bar_dict | day_dict
+        return pd.DataFrame([row_dict], index=[self.time_str])
+
+    def min_df(self):
+        bar_dict = self.bar_dict()
+        min_dict = {
+            K.Ema.fast: None,
+            K.Ema.slow: None,
+
+            K.Macd.fast: None,
+            K.Macd.slow: None,
+            K.Macd.dif: None,
+            K.Macd.dea: None,
+            K.Macd.macd: None,
+
+            K.Turn.apex_val: 0,
+            K.Turn.turn_val: 0,
+            K.Turn.prev_idx: '',
+
+            K.Wave.rise_lvl: -2,
+            K.Wave.fall_lvl: -2,
+        }
+        row_dict = bar_dict | min_dict
+        return pd.DataFrame([row_dict], index=[self.time_str])
+
+
+class Line:
+    class L(ABC):
+        def __init__(self, cfg: pd.DataFrame, df: pd.DataFrame):
+            self.cfg = cfg
+            self.df = df
+
+        def _first(self, key: str):
+            price = self.df[K.Bar.close].iloc[-1]
+            self.df[key].iloc[-1] = price
+
+        def _next(self, key: str):
+            price = self.df[K.Bar.close].iloc[-1]
+            period = self.cfg[key].iloc[-1]
+            prev_val = self.df[key].iloc[-2]
+            next_val = self._calc(price, period, prev_val)
+            self.df[key].iloc[-1] = next_val
+
+        @abstractmethod
+        def _calc(self, price: float, period: int, prev_val: float):
+            pass
+
+    class Ema(L):
+        def first(self):
+            self._first(K.Ema.fast)
+            self._first(K.Ema.slow)
+
+        def next(self):
+            self._next(K.Ema.fast)
+            self._next(K.Ema.slow)
+
+        def _calc(self, price: float, period: int, prev_val: float):
+            alpha = 2 / (period + 1)
+            value = alpha * price + (1 - alpha) * prev_val
+            return round(value, 4)
+
+    class Smma(L):
+        def first(self):
+            self._first(K.Smma.fast)
+            self._first(K.Smma.slow)
+
+        def next(self):
+            self._next(K.Smma.fast)
+            self._next(K.Smma.slow)
+
+        def _calc(self, price: float, period: int, prev_val: float):
+            value = (prev_val * (period - 1) + price) / period
+            return round(value, 4)
+
+    class Macd(L):
+        def first(self):
+            self._first(K.Macd.fast)
+            self._first(K.Macd.slow)
+            self.df[K.Macd.dif].iloc[-1] = 0
+            self.df[K.Macd.dea].iloc[-1] = 0
+            self.df[K.Macd.macd].iloc[-1] = 0
+
+        def next(self):
+            self._next(K.Macd.fast)
+            self._next(K.Macd.slow)
+            self._next_macd()
+
+        def _next_macd(self):
+            period = self.cfg[K.Macd.sign].iloc[-1]
+            prev_dea = self.df[K.Macd.dea].iloc[-2]
+            fast_ema = self.df[K.Macd.fast].iloc[-1]
+            slow_ema = self.df[K.Macd.slow].iloc[-1]
+
+            dif = round(fast_ema - slow_ema, 4)
+            dea = self._calc(dif, period, prev_dea)
+            macd = round((dif - dea) * 2, 4)
+
+            self.df[K.Macd.dif].iloc[-1] = dif
+            self.df[K.Macd.dea].iloc[-1] = dea
+            self.df[K.Macd.macd].iloc[-1] = macd
+
+        def _calc(self, price: float, period: int, prev_val: float):
+            alpha = 2 / (period + 1)
+            value = alpha * price + (1 - alpha) * prev_val
+            return round(value, 4)
+
+    class Turn(L):
+        def next(self):
+            # 判断顶点
+
+            pass
+
+
+        def _calc(self, price: float, period: int, prev_val: float):
+            pass
 
 
 class Config:
@@ -126,233 +298,7 @@ class Config:
         return pd.DataFrame([self.cfg])
 
 
-class PosBar:
-    def __init__(self, pos, bar):
-        self.datetime_str = bar.datetime.strftime('%Y-%m-%d %H:%M:%S')
-        self.avail_amount = getattr(pos, 'enable_amount', 0.0)
-        self.total_amount = getattr(pos, 'amount', 0.0)
-        self.cost_price = getattr(pos, 'cost_basis', 0.0)
-        self.last_price = getattr(pos, 'last_sale_price', 0.0)
-
-    def df(self):
-        row_dict = {
-            K.Pos.avail_amount: self.avail_amount,
-            K.Pos.total_amount: self.total_amount,
-            K.Pos.cost_price: self.cost_price,
-            K.Pos.last_price: self.last_price,
-        }
-        return pd.DataFrame([row_dict], index=[self.datetime_str])
-
-
-class DayBar:
-    def __init__(self, bar):
-        self.time_str = bar.datetime.strftime('%Y-%m-%d %H:%M:%S')
-        self.datetime = bar.datetime  # 时间
-        self.volume = round(bar.volume, 2)  # 交易量
-        self.money = round(bar.money, 2)  # 交易金额
-        self.price = round(bar.price, 4)  # 最新价
-        self.close = round(bar.close, 4)  # 收盘价
-        self.open = round(bar.open, 4)  # 开盘价
-        self.high = round(bar.high, 4)  # 最高价
-        self.low = round(bar.low, 4)  # 最低价
-
-    def df(self):
-        row_dict = {
-            K.Bar.datetime: self.datetime,
-            K.Bar.volume: self.volume,
-            K.Bar.price: self.price,
-            K.Bar.close: self.close,
-            K.Bar.open: self.open,
-            K.Bar.high: self.high,
-            K.Bar.low: self.low,
-
-            K.Smma.fast: None,
-            K.Smma.slow: None,
-        }
-        return pd.DataFrame([row_dict], index=[self.time_str])
-
-
-class MinBar:
-    def __init__(self, bar):
-        self.time_str = bar.datetime.strftime('%Y-%m-%d %H:%M:%S')
-        self.datetime = bar.datetime  # 时间
-        self.volume = round(bar.volume, 2)  # 交易量
-        self.money = round(bar.money, 2)  # 交易金额
-        self.price = round(bar.price, 4)  # 最新价
-        self.close = round(bar.close, 4)  # 收盘价
-        self.open = round(bar.open, 4)  # 开盘价
-        self.high = round(bar.high, 4)  # 最高价
-        self.low = round(bar.low, 4)  # 最低价
-
-    def df(self):
-        row_dict = {
-            K.Bar.datetime: self.datetime,
-            K.Bar.volume: self.volume,
-            K.Bar.price: self.price,
-            K.Bar.close: self.close,
-            K.Bar.open: self.open,
-            K.Bar.high: self.high,
-            K.Bar.low: self.low,
-
-            K.Ema.fast: None,
-            K.Ema.slow: None,
-
-            K.Macd.fast: None,
-            K.Macd.slow: None,
-            K.Macd.dif: None,
-            K.Macd.dea: None,
-            K.Macd.macd: None,
-
-            K.Wave.apex_val: 0,
-            K.Wave.turn_val: 0,
-            K.Wave.rise_lvl: -2,
-            K.Wave.fall_lvl: -2,
-        }
-        return pd.DataFrame([row_dict], index=[self.time_str])
-
-
-class Config:
-    def __init__(self):
-        self.Pos: Config._Pos = Config._Pos()
-        self.Ema: Config._Ema = Config._Ema()
-        self.Smma: Config._Smma = Config._Smma()
-        self.Macd: Config._Macd = Config._Macd()
-        self.Rise: Config._Rise = Config._Rise()
-        self.Fall: Config._Fall = Config._Fall()
-        self.Wave: Config._Wave = Config._Wave()
-
-    def shift(self, level: str = 'ByMin'):
-        match level:
-            case 'ByMin':
-                self.Smma.fast = 10
-                self.Smma.slow = 30
-            case 'ByDay':
-                self.Smma.fast = 5
-                self.Smma.slow = 10
-
-    class _Pos:
-        def __init__(self):
-            self.base_principal = 8000  # 基础资金
-            self.cost_limit = 1.50  # 成本上限（比例）
-            self.loss_limit = 0.15  # 亏损上限（比例）
-            self.gain_limit = 0.05  # 盈利上限（比例）
-
-    class _Ema:
-        def __init__(self):
-            # 指数移动平均线
-            self.fast = 10  # 快线周期
-            self.slow = 30  # 慢线周期
-
-    class _Smma:
-        def __init__(self):
-            # 平滑移动平均线
-            self.fast = 10  # 快线周期
-            self.slow = 30  # 慢线周期
-
-    class _Macd:
-        def __init__(self):
-            self.fast = 13  # 快线周期
-            self.slow = 60  # 慢线周期
-            self.sign = 5  # 信号线周期
-
-    class _Rise:
-        def __init__(self):
-            self.add_quotas = [0.300]  # 加仓额度（比例）
-            self.thresholds = [0.004]  # 加仓阈值（比例）
-            self.macd_limit = 0.0015  # macd下限（比例）
-
-    class _Fall:
-        def __init__(self):
-            self.sub_quotas = [0.300, 0.400, 0.300]  # 减仓额度（比例）
-            self.thresholds = [0.004, 0.007, 0.010]  # 减仓阈值（比例）
-
-    class _Wave:
-        def __init__(self):
-            self.min_swing = 0.004  # 最小摆动（比例）
-
-
 ############################################################
-class Bar:
-    def __init__(self, bar):
-        self.datetime = bar.datetime  # 时间
-        self.volume = round(bar.volume, 2)  # 交易量
-        self.money = round(bar.money, 2)  # 交易金额
-        self.price = round(bar.price, 4)  # 最新价
-        self.close = round(bar.close, 4)  # 收盘价
-        self.open = round(bar.open, 4)  # 开盘价
-        self.high = round(bar.high, 4)  # 最高价
-        self.low = round(bar.low, 4)  # 最低价
-
-    class Ema:
-        def __init__(self):
-            self.fast = 0.0
-            self.slow = 0.0
-
-        def first(self, bar: Bar):
-            self.fast = round(bar.close, 4)
-            self.slow = round(bar.close, 4)
-            return self
-
-        def next(self, cfg: Config, bar: Bar, pre_ema: Self):
-            fast = Bar.Ema.calc(bar.close, cfg.Ema.fast, pre_ema.fast)
-            slow = Bar.Ema.calc(bar.close, cfg.Ema.slow, pre_ema.slow)
-            self.fast = round(fast, 4)
-            self.slow = round(slow, 4)
-            return self
-
-        @staticmethod
-        def calc(price: float, period: int, pre_ema: float):
-            alpha = 2 / (period + 1)
-            ema = alpha * price + (1 - alpha) * pre_ema
-            return round(ema, 4)
-
-    class Smma:
-        def __init__(self):
-            self.fast = 0.0
-            self.slow = 0.0
-
-        def first(self, bar: Bar):
-            self.fast = round(bar.close, 4)
-            self.slow = round(bar.close, 4)
-            return self
-
-        def next(self, cfg: Config, bar: Bar, pre_smma: Self):
-            fast = (pre_smma.fast * (cfg.Smma.fast - 1) + bar.close) / cfg.Smma.fast
-            slow = (pre_smma.slow * (cfg.Smma.slow - 1) + bar.close) / cfg.Smma.slow
-            self.fast = round(fast, 4)
-            self.slow = round(slow, 4)
-            return self
-
-        def is_rise(self):
-            """均线上涨"""
-            return self.fast >= self.slow
-
-        def is_fall(self):
-            """均线下跌"""
-            return self.fast <= self.slow
-
-    class Macd:
-        def __init__(self):
-            self.ema_fast = 0.0
-            self.ema_slow = 0.0
-            self.dif = 0.0
-            self.dea = 0.0
-            self.macd = 0.0
-
-        def first(self, bar: Bar):
-            self.ema_fast = round(bar.close, 4)
-            self.ema_slow = round(bar.close, 4)
-            return self
-
-        def next(self, cfg: Config, bar: Bar, pre_macd: Self):
-            self.ema_fast = Bar.Ema.calc(bar.close, cfg.Macd.fast, pre_macd.ema_fast)
-            self.ema_slow = Bar.Ema.calc(bar.close, cfg.Macd.slow, pre_macd.ema_slow)
-            self.dif = round(self.ema_fast - self.ema_slow, 4)
-            self.dea = Bar.Ema.calc(self.dif, cfg.Macd.sign, pre_macd.dea)
-            self.macd = round((self.dif - self.dea) * 2, 4)
-            return self
-
-
 class NodeBar:
     def __init__(self, cfg, bar):
         self.Cfg: Config = cfg
