@@ -29,20 +29,14 @@ import pandas as pd
 
 
 class K:
-    datetime = 'datetime'
-
-    class Pos:
-        base_funds = 'pos.base_funds'
-        cost_limit = 'pos.cost_limit'
-        loss_limit = 'pos.loss_limit'
-        gain_limit = 'pos.gain_limit'
-
-        avail_amount = 'pos.avail_amount'
-        total_amount = 'pos.total_amount'
-        cost_price = 'pos.cost_price'
-        last_price = 'pos.last_price'
+    base_funds = 'base_funds'
+    cost_limit = 'cost_limit'
+    loss_limit = 'loss_limit'
+    gain_limit = 'gain_limit'
+    least_wave = 'least_wave'
 
     class Bar:
+        datetime = 'datetime'
         volume = 'bar.volume'
         money = 'bar.money'
         price = 'bar.price'
@@ -50,6 +44,12 @@ class K:
         open = 'bar.open'
         high = 'bar.high'
         low = 'bar.low'
+
+    class Pos:
+        avail_amount = 'pos.avail_amount'
+        total_amount = 'pos.total_amount'
+        cost_price = 'pos.cost_price'
+        last_price = 'pos.last_price'
 
     class Ema:
         fast = 'ema.fast'
@@ -63,15 +63,14 @@ class K:
         fast = 'macd.fast'
         slow = 'macd.slow'
         sign = 'macd.sign'
-
         dif = 'macd.dif'
         dea = 'macd.dea'
         macd = 'macd.macd'
 
     class Turn:
+        prev_idx = 'turn.prev_idx'
         apex_val = 'turn.apex_val'
         turn_val = 'turn.turn_val'
-        prev_idx = 'turn.prev_idx'
 
     class Rise:
         add_quotas = 'rise.add_quotas'
@@ -83,29 +82,8 @@ class K:
         thresholds = 'fall.thresholds'
 
     class Wave:
-        min_turn = 'wave.min_turn'
         rise_lvl = 'wave.rise_lvl'
         fall_lvl = 'wave.fall_lvl'
-
-
-class Pos:
-    def __init__(self, pos, bar):
-        self.datetime_str = bar.datetime.strftime('%Y-%m-%d %H:%M:%S')
-        self.avail_amount = getattr(pos, 'enable_amount', 0.0)
-        self.total_amount = getattr(pos, 'amount', 0.0)
-        self.cost_price = getattr(pos, 'cost_basis', 0.0)
-        self.last_price = getattr(pos, 'last_sale_price', 0.0)
-        self.datetime = bar.datetime
-
-    def pos_df(self):
-        pos_dict = {
-            K.datetime: self.datetime,
-            K.Pos.avail_amount: self.avail_amount,
-            K.Pos.total_amount: self.total_amount,
-            K.Pos.cost_price: self.cost_price,
-            K.Pos.last_price: self.last_price,
-        }
-        return pd.DataFrame([pos_dict], index=[self.datetime_str])
 
 
 class Bar:
@@ -120,9 +98,9 @@ class Bar:
         self.high = round(bar.high, 4)  # 最高价
         self.low = round(bar.low, 4)  # 最低价
 
-    def bar_dict(self):
-        return {
-            K.datetime: self.datetime,
+    def to_df(self):
+        bar_dict = {
+            K.Bar.datetime: self.datetime,
             K.Bar.volume: self.volume,
             K.Bar.money: self.money,
             K.Bar.price: self.price,
@@ -131,68 +109,62 @@ class Bar:
             K.Bar.high: self.high,
             K.Bar.low: self.low,
         }
+        return pd.DataFrame([bar_dict], index=[self.time_str])
 
-    def day_df(self):
-        bar_dict = self.bar_dict()
-        day_dict = {
-            K.Smma.fast: None,
-            K.Smma.slow: None,
+
+class Pos:
+    def __init__(self, pos, bar):
+        self.datetime_str = bar.datetime.strftime('%Y-%m-%d %H:%M:%S')
+        self.avail_amount = getattr(pos, 'enable_amount', 0.0)
+        self.total_amount = getattr(pos, 'amount', 0.0)
+        self.cost_price = getattr(pos, 'cost_basis', 0.0)
+        self.last_price = getattr(pos, 'last_sale_price', 0.0)
+        self.datetime = bar.datetime
+
+    def to_df(self):
+        pos_dict = {
+            K.Bar.datetime: self.datetime,
+            K.Pos.avail_amount: self.avail_amount,
+            K.Pos.total_amount: self.total_amount,
+            K.Pos.cost_price: self.cost_price,
+            K.Pos.last_price: self.last_price,
         }
-        row_dict = bar_dict | day_dict
-        return pd.DataFrame([row_dict], index=[self.time_str])
-
-    def min_df(self):
-        bar_dict = self.bar_dict()
-        min_dict = {
-            K.Ema.fast: None,
-            K.Ema.slow: None,
-
-            K.Macd.fast: None,
-            K.Macd.slow: None,
-            K.Macd.dif: None,
-            K.Macd.dea: None,
-            K.Macd.macd: None,
-
-            K.Turn.apex_val: 0,
-            K.Turn.turn_val: 0,
-            K.Turn.prev_idx: '',
-
-            K.Wave.rise_lvl: -2,
-            K.Wave.fall_lvl: -2,
-        }
-        row_dict = bar_dict | min_dict
-        return pd.DataFrame([row_dict], index=[self.time_str])
+        return pd.DataFrame([pos_dict], index=[self.datetime_str])
 
 
 class Line:
     class L(ABC):
-        def __init__(self, cfg: pd.DataFrame, df: pd.DataFrame):
-            self.cfg = cfg
-            self.df = df
+        def __init__(self, cfg: dict):
+            self.cfg: dict = cfg
 
-        def _first(self, key: str):
-            price = self.df[K.Bar.close].iloc[-1]
-            self.df[key].iloc[-1] = price
+        @staticmethod
+        def get(df: pd.DataFrame, col: str, idx: int) -> float:
+            return df[col].iloc[idx]
 
-        def _next(self, key: str):
-            price = self.df[K.Bar.close].iloc[-1]
-            period = self.cfg[key].iloc[-1]
-            prev_val = self.df[key].iloc[-2]
-            next_val = self._calc(price, period, prev_val)
-            self.df[key].iloc[-1] = next_val
+        @staticmethod
+        def set(df: pd.DataFrame, col: str, idx: int, val):
+            df[col].iloc[idx] = val
 
         @abstractmethod
         def _calc(self, price: float, period: int, prev_val: float):
             pass
 
-    class Ema(L):
-        def first(self):
-            self._first(K.Ema.fast)
-            self._first(K.Ema.slow)
+        def _next(self, df: pd.DataFrame, key: str, price: float):
+            period = self.cfg.get(key)
+            prev_val = self.get(df, key, -2)
+            next_val = self._calc(price, period, prev_val)
+            self.set(df, key, -1, next_val)
 
-        def next(self):
-            self._next(K.Ema.fast)
-            self._next(K.Ema.slow)
+    class Ema(L):
+        def first(self, df: pd.DataFrame):
+            price = self.get(df, K.Bar.close, -1)
+            df[K.Ema.fast] = price
+            df[K.Ema.slow] = price
+
+        def next(self, df: pd.DataFrame):
+            price = self.get(df, K.Bar.close, -1)
+            self._next(df, K.Ema.fast, price)
+            self._next(df, K.Ema.slow, price)
 
         def _calc(self, price: float, period: int, prev_val: float):
             alpha = 2 / (period + 1)
@@ -200,44 +172,48 @@ class Line:
             return round(value, 4)
 
     class Smma(L):
-        def first(self):
-            self._first(K.Smma.fast)
-            self._first(K.Smma.slow)
+        def first(self, df: pd.DataFrame):
+            price = self.get(df, K.Bar.close, -1)
+            df[K.Smma.fast] = price
+            df[K.Smma.slow] = price
 
-        def next(self):
-            self._next(K.Smma.fast)
-            self._next(K.Smma.slow)
+        def next(self, df: pd.DataFrame):
+            price = self.get(df, K.Bar.close, -1)
+            self._next(df, K.Ema.fast, price)
+            self._next(df, K.Ema.slow, price)
 
         def _calc(self, price: float, period: int, prev_val: float):
             value = (prev_val * (period - 1) + price) / period
             return round(value, 4)
 
     class Macd(L):
-        def first(self):
-            self._first(K.Macd.fast)
-            self._first(K.Macd.slow)
-            self.df[K.Macd.dif].iloc[-1] = 0
-            self.df[K.Macd.dea].iloc[-1] = 0
-            self.df[K.Macd.macd].iloc[-1] = 0
+        def first(self, df: pd.DataFrame):
+            price = self.get(df, K.Bar.close, -1)
+            df[K.Macd.fast] = price
+            df[K.Macd.slow] = price
+            df[K.Macd.dif] = 0
+            df[K.Macd.dea] = 0
+            df[K.Macd.macd] = 0
 
-        def next(self):
-            self._next(K.Macd.fast)
-            self._next(K.Macd.slow)
-            self._next_macd()
+        def next(self, df: pd.DataFrame):
+            price = self.get(df, K.Bar.close, -1)
+            self._next(df, K.Macd.fast, price)
+            self._next(df, K.Macd.slow, price)
+            self._next_macd(df)
 
-        def _next_macd(self):
-            period = self.cfg[K.Macd.sign].iloc[-1]
-            prev_dea = self.df[K.Macd.dea].iloc[-2]
-            fast_ema = self.df[K.Macd.fast].iloc[-1]
-            slow_ema = self.df[K.Macd.slow].iloc[-1]
+        def _next_macd(self, df: pd.DataFrame):
+            period = self.cfg.get(K.Macd.sign)
+            fast_ema = self.get(df, K.Macd.fast, -1)
+            slow_ema = self.get(df, K.Macd.slow, -1)
+            prev_dea = self.get(df, K.Macd.dea, -2)
 
             dif = round(fast_ema - slow_ema, 4)
             dea = self._calc(dif, period, prev_dea)
             macd = round((dif - dea) * 2, 4)
 
-            self.df[K.Macd.dif].iloc[-1] = dif
-            self.df[K.Macd.dea].iloc[-1] = dea
-            self.df[K.Macd.macd].iloc[-1] = macd
+            self.set(df, K.Macd.dif, -1, dif)
+            self.set(df, K.Macd.dea, -1, dea)
+            self.set(df, K.Macd.macd, -1, macd)
 
         def _calc(self, price: float, period: int, prev_val: float):
             alpha = 2 / (period + 1)
@@ -245,11 +221,45 @@ class Line:
             return round(value, 4)
 
     class Turn(L):
-        def next(self):
-            # 判断顶点
+        def first(self, df: pd.DataFrame):
+            self.set(df, K.Turn.prev_idx, -1, df.index[-1])
+            self.set(df, K.Turn.apex_val, -1, 0)
+            self.set(df, K.Turn.turn_val, -1, -2)
+
+        def next(self, df: pd.DataFrame):
+            # 先预设默认值
+            self._init_val(df)
+            # 计算顶点
+            self._calc_apex(df)
+            # 计算拐点
+            self._calc_turn(df)
+
+        def _init_val(self, df: pd.DataFrame):
+            # prev_idx：默认与前一行相同
+            prev_idx = self.get(df, K.Turn.prev_idx, -2)
+            self.set(df, K.Turn.prev_idx, -1, prev_idx)
+            # 其他默认为0
+            self.set(df, K.Turn.apex_val, -1, 0)
+            self.set(df, K.Turn.turn_val, -1, 0)
+
+        def _calc_apex(self, df: pd.DataFrame):
+            # 根据EMA的快线
+            if len(df) < 3:
+                return
+
+            ser = df[K.Ema.fast]
+            for i in range(-1, -len(ser) - 1, -1):
+                if ser.iloc[i] == df.iloc[i - 1]:
+                    continue
+
+
+
+
 
             pass
 
+        def _calc_turn(self, df: pd.DataFrame):
+            pass
 
         def _calc(self, price: float, period: int, prev_val: float):
             pass
@@ -258,11 +268,11 @@ class Line:
 class Config:
     def __init__(self):
         self.cfg = {
-            # 仓位
-            K.Pos.base_funds: 8000,  # 基础资金
-            K.Pos.cost_limit: 1.50,  # 成本上限（比例）
-            K.Pos.loss_limit: 0.15,  # 亏损上限（比例）
-            K.Pos.gain_limit: 0.05,  # 盈利上限（比例）
+            K.base_funds: 8000,  # 基础资金
+            K.cost_limit: 1.50,  # 成本上限（比例）
+            K.loss_limit: 0.15,  # 亏损上限（比例）
+            K.gain_limit: 0.05,  # 盈利上限（比例）
+            K.least_wave: 0.04,  # 最小波动（比例）
 
             # 指数移动平均线
             K.Ema.fast: 10,
@@ -285,9 +295,6 @@ class Config:
             # 减仓
             K.Fall.cut_quotas: [0.300, 0.400, 0.300],  # 减仓额度（比例）
             K.Fall.thresholds: [0.004, 0.007, 0.010],  # 减仓阈值（比例）
-
-            # 波动
-            K.Wave.min_turn: 0.04  # 最小摆动（比例）
         }
 
     def set(self, key, value):
