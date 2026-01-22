@@ -228,37 +228,48 @@ class Line:
 
         def next(self, df: pd.DataFrame):
             # 先预设默认值
-            self._init_val(df)
-            # 计算顶点
-            self._calc_apex(df)
-            # 计算拐点
-            self._calc_turn(df)
-
-        def _init_val(self, df: pd.DataFrame):
-            # prev_idx：默认与前一行相同
             prev_idx = self.get(df, K.Turn.prev_idx, -2)
             self.set(df, K.Turn.prev_idx, -1, prev_idx)
-            # 其他默认为0
             self.set(df, K.Turn.apex_val, -1, 0)
             self.set(df, K.Turn.turn_val, -1, 0)
 
+            # 计算顶点、拐点
+            self._calc_apex(df)
+            self._calc_turn(df)
+
         def _calc_apex(self, df: pd.DataFrame):
-            # 根据EMA的快线
-            if len(df) < 3:
+            """计算顶点"""
+            ser = df[K.Ema.fast]
+            if len(ser) < 3:
                 return
 
-            ser = df[K.Ema.fast]
-            for i in range(-1, -len(ser) - 1, -1):
-                if ser.iloc[i] == df.iloc[i - 1]:
-                    continue
+            # 末尾两个值
+            ema_1st = ser.iloc[-1]
+            ema_2nd = ser.iloc[-2]
+            if ema_1st == ema_2nd:
+                return
 
+            # 末尾第三个值
+            ema_3rd = -1
+            for i in range(-3, -len(ser) - 1, -1):
+                if df[K.Turn.apex_val].iloc[i] != 0:
+                    ema_3rd = ser.iloc[i]
+                    break
+                if ser.iloc[i] != ema_2nd:
+                    ema_3rd = ser.iloc[i]
+                    break
+            if ema_3rd == -1:
+                return
 
-
-
-
-            pass
+            # 判断顶点
+            if ema_3rd < ema_2nd > ema_1st:
+                self.set(df, K.Turn.apex_val, -2, 1)
+            if ema_3rd > ema_2nd < ema_1st:
+                self.set(df, K.Turn.apex_val, -2, -1)
 
         def _calc_turn(self, df: pd.DataFrame):
+            """计算拐点"""
+
             pass
 
         def _calc(self, price: float, period: int, prev_val: float):
