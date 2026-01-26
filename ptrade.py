@@ -74,8 +74,10 @@ class K:
 
     class Turn:
         turn_val = 'turn.turn_val'
-        prev_idx = 'turn.prev_idx'
-        prev_bar = 'turn.prev_bar'
+        turn_idx = 'turn.turn_idx'
+        turn_ema = 'turn.turn_ema'
+        nodes = 'turn.nodes'
+        turns = 'turn.turns'
 
 
 ############################################################
@@ -112,52 +114,43 @@ class Bar:
 
     class Node:
         def __init__(self):
-            self.node_idx = 0
-            self.node_ema = 0
-            self.apex_val = 0
+            self.node_idx = 0  # 节点索引
+            self.node_ema = 0  # 节点均值
+            self.apex_val = 0  # 顶点标记
 
     class Turn:
         def __init__(self):
-            self.node_idx = 0  # 节点时间
-            self.node_ema = 0  # 节点EMA
-            self.turn_idx = 0  # 拐点时间
-            self.turn_ema = 0  # 拐点EMA
+            self.turn_idx = 0  # 拐点索引
+            self.turn_ema = 0  # 拐点均值
             self.turn_val = 0  # 拐点标记
-            self.apex_min = None  # 拐点的最小顶点
-            self.apex_max = None  # 拐点的最大顶点
 
-        def be_turn(self, apex: Bar.Node):
-            self.turn_idx = apex.node_idx
-            self.turn_ema = apex.node_ema
-            self.turn_val = apex.apex_val
-            self.apex_min = None
-            self.apex_max = None
-            self.be_apex(apex.apex_val)
+            # 加/减仓额度，用于避免重复交易
+            self.add_quotas = []
+            self.sub_quotas = []
 
-        def be_apex(self, apex_val=0):
-            apex = Bar.Node()
-            apex.node_idx = self.node_idx
-            apex.node_ema = self.node_ema
-            apex.apex_val = apex_val
-            if self.apex_min is None or self.apex_min.apex_ema > self.node_ema:
-                self.apex_min = apex
-            if self.apex_max is None or self.apex_max.apex_ema < self.node_ema:
-                self.apex_max = apex
-            return self
+            # 最大/小顶点，用于判断是否有效的拐点
+            self.MaxApex: Bar.Node | None = None
+            self.MinApex: Bar.Node | None = None
 
-        def is_peak(self, threshold):
-            if self.apex_max.apex_ema - self.node_ema < threshold:
-                return False
-            if self.apex_max.apex_ema - self.turn_ema < threshold:
-                return False
-            return True
+        def max_apex(self, apex: Bar.Node, threshold: float):
+            """到下一拐点前：最大的凸点"""
+            if apex.node_ema - self.turn_ema >= threshold:
+                if self.MaxApex is None or apex.node_ema > self.MaxApex.node_ema:
+                    self.MaxApex = apex
 
-        def is_valley(self, threshold):
-            if self.node_ema - self.apex_min.apex_ema < threshold:
-                return False
-            if self.turn_ema - self.apex_min.apex_ema < threshold:
-                return False
-            return True
+        def min_apex(self, apex: Bar.Node, threshold: float):
+            """到下一拐点前：最小的凹点"""
+            if self.turn_ema - apex.node_ema >= threshold:
+                if self.MinApex is None or apex.node_ema < self.MinApex.node_ema:
+                    self.MinApex = apex
+
+        def is_peak(self, node: Bar.Node, threshold):
+            """是否波峰"""
+            return self.MaxApex and self.MaxApex.node_ema - node.node_ema >= threshold
+
+        def is_valley(self, node: Bar.Node, threshold):
+            """是否波谷"""
+            return self.MinApex and node.node_ema - self.MinApex.node_ema >= threshold
 
 
 class Pos:
@@ -191,8 +184,8 @@ class Pos:
 class Log:
     def __init__(self, info: dict):
         self.node_idx = info[K.Bar.datetime]
-        self.turn_idx = info[K.Turn.prev_idx]
-        self.turn_val = info[K.Turn.prev_ema]
+        self.turn_idx = info[K.Turn.turn_idx]
+        self.turn_val = info[K.Turn.turn_val]
         self.amount = 0
         self.level = 0
         self.type = 0
@@ -233,7 +226,8 @@ class Line:
 
         @staticmethod
         def set(df: pd.DataFrame, col: str, idx: int, val):
-            df[col].iloc[idx] = val
+            col_idx = df.columns.get_loc(col)
+            df.iat[idx, col_idx] = val
 
         @abstractmethod
         def _calc(self, price: float, period: int, prev_val: float):
@@ -310,100 +304,106 @@ class Line:
             return round(value, 4)
 
     class Turn(L):
-        def first(self, df: pd.DataFrame):
+        def new_node(self, df: pd.DataFrame) -> Bar.Node:
+            node = Bar.Node()
+            node.node_idx = df.index[-1]
+            node.node_ema = self.get(df, K.Ema.fast, -1)
+            return node
+
+        def new_turn(self, node: Bar.Node) -> Bar.Turn:
             turn = Bar.Turn()
-            turn.node_idx = df.index[-1]
-            turn.node_ema = self.get(df, K.Ema.fast, -1)
-            turn.turn_idx = turn.node_idx
-            turn.turn_ema = turn.node_ema
-            turn.turn_val = 0
-            turn.be_apex()
+            turn.turn_idx = node.node_idx
+            turn.turn_ema = node.node_ema
+            turn.turn_val = node.apex_val
+            turn.add_quotas = copy.copy(self.Cfg.Rise.add_quotas)
+            turn.sub_quotas = copy.copy(self.Cfg.Fall.sub_quotas)
+            return turn
+
+        def first(self, df: pd.DataFrame):
+            node = self.new_node(df)
+            turn = self.new_turn(node)
 
             df[K.Turn.turn_val] = 0
-            df[K.Turn.prev_idx] = turn.node_idx
-            df[K.Turn.prev_bar] = pd.Series(dtype=object)
-            self.set(df, K.Turn.prev_bar, -1, turn)
+            df[K.Turn.turn_idx] = df.index[-1]
+            df[K.Turn.turn_ema] = node.node_ema
+            df[K.Turn.nodes] = pd.Series(dtype=object)
+            df[K.Turn.turns] = pd.Series(dtype=object)
+            self.set(df, K.Turn.nodes, -1, [node])
+            self.set(df, K.Turn.turns, -1, [turn])
 
         def next(self, df: pd.DataFrame):
-            prev_turn = self.get(df, K.Turn.prev_bar, -2)
-            next_turn = copy.copy(prev_turn)
-            next_turn.node_idx = df.index[-1]
-            next_turn.node_ema = self.get(df, K.Ema.fast, -1)
+            nodes: list[Bar.Node] = self.get(df, K.Turn.nodes, -2)
+            turns: list[Bar.Turn] = self.get(df, K.Turn.turns, -2)
 
             # 先预设值
+            turn_idx = self.get(df, K.Turn.turn_idx, -2)
+            turn_ema = self.get(df, K.Turn.turn_ema, -2)
             self.set(df, K.Turn.turn_val, -1, 0)
-            self.set(df, K.Turn.prev_idx, -1, next_turn.turn_idx)
-            self.set(df, K.Turn.prev_bar, -1, next_turn)
-
-            # 计算顶点、拐点
-            self._calc_apex(df)
-            self._calc_turn(df)
-
-        def _calc_apex(self, df: pd.DataFrame):
-            """计算顶点"""
-            if len(df) < 3:
-                return
+            self.set(df, K.Turn.turn_idx, -1, turn_idx)
+            self.set(df, K.Turn.turn_ema, -1, turn_ema)
+            self.set(df, K.Turn.nodes, -1, nodes)
+            self.set(df, K.Turn.turns, -1, turns)
 
             # 跳过连续相等的节点
-            node_1st = self.get(df, K.Turn.prev_bar, -1)
-            node_2nd = self.get(df, K.Turn.prev_bar, -2)
-            if node_1st.node_ema == node_2nd.node_ema:
+            node = self.new_node(df)
+            if node.node_ema == nodes[-1].node_ema:
                 return
 
-            # 倒数第三个节点
-            node_3rd = None
-            for i in range(-3, -len(df) - 1, -1):
-                temp = self.get(df, K.Turn.prev_bar, i)
-                if temp.node_ema != node_2nd.node_ema:
-                    node_3rd = temp
-                    break
-            if node_3rd is None:
+            # 节点数据不得小于3条
+            nodes.append(node)
+            if len(nodes) < 3:
                 return
 
-            # 判断顶点
-            is_peak = node_1st.node_ema < node_2nd.node_ema > node_3rd.node_ema
-            is_valley = node_1st.node_ema > node_2nd.node_ema < node_3rd.node_ema
-            apex_val = 1 if is_peak else -1 if is_valley else 0
-            if is_peak or is_valley:
-                node_2nd.be_apex(apex_val)
-                node_3rd.apex_min = node_2nd.apex_min
-                node_3rd.apex_max = node_2nd.apex_max
+            # 计算拐点
+            self._calc_turn(df)
 
         def _calc_turn(self, df: pd.DataFrame):
             """计算拐点"""
-            turn = self.get(df, K.Turn.prev_bar, -1)
+            nodes: list[Bar.Node] = self.get(df, K.Turn.nodes, -1)
+            turns: list[Bar.Turn] = self.get(df, K.Turn.turns, -1)
 
             # 最小振幅价格差
             base_price = self.Cfg.Bas.base_price
             least_wave = self.Cfg.Turn.least_wave
             threshold = round(base_price * least_wave, 4)
 
-            # 首个拐点
-            if turn.turn_val == 0:
-                turn_val = 0
-                if turn.node_ema - turn.turn_ema >= threshold:
-                    turn_val = -1
-                if turn.turn_ema - turn.node_ema >= threshold:
-                    turn_val = 1
-                if turn_val != 0:
-                    self.set(df, K.Turn.turn_val, 0, turn_val)
-                    turn.turn_val = turn_val
+            # 计算顶点
+            prev_node = nodes[-3]
+            midd_node = nodes[-2]
+            last_node = nodes[-1]
+            last_turn = turns[-1]
+            if prev_node.node_ema < midd_node.node_ema > last_node.node_ema:
+                midd_node.apex_val = 1
+                last_turn.max_apex(midd_node, threshold)
+            elif prev_node.node_ema > midd_node.node_ema < last_node.node_ema:
+                midd_node.apex_val = -1
+                last_turn.min_apex(midd_node, threshold)
+
+            # 起始拐点
+            first_turn = turns[0]
+            if first_turn.turn_val == 0:
+                diff = round(first_turn.turn_ema - last_node.node_ema, 4)
+                if abs(diff) > threshold:
+                    first_turn.turn_val = 1 if diff > 0 else -1
+                    self.set(df, K.Turn.turn_val, 0, first_turn.turn_val)
                 return
 
-            # 判断波峰波谷
+            # 计算拐点
             apex = None
-            if turn.is_peak(threshold):
-                apex = turn.apex_max
-            if turn.is_valley(threshold):
-                apex = turn.apex_min
+            if last_turn.is_peak(last_node, threshold):
+                apex = last_turn.MaxApex
+            elif last_turn.is_peak(midd_node, threshold):
+                apex = last_turn.MinApex
             if apex is None:
                 return
+            new_turn = self.new_turn(apex)
+            turns.append(new_turn)
 
-            # 更新拐点
-            turn.be_turn(apex)
-            turn_idx = df.index.get_loc(apex.node_idx)
-            self.set(df, K.Turn.turn_val, turn_idx, apex.apex_val)
-            self.set(df, K.Turn.prev_idx, -1, apex.apex_idx)
+            # 更新df
+            idx = df.index.get_loc(new_turn.turn_idx)
+            self.set(df, K.Turn.turn_val, idx, new_turn.turn_val)
+            self.set(df, K.Turn.turn_idx, -1, new_turn.turn_idx)
+            self.set(df, K.Turn.turn_ema, -1, new_turn.turn_ema)
 
         def _calc(self, price: float, period: int, prev_val: float):
             pass
@@ -430,7 +430,7 @@ class Broker:
         def do_sell(self, func: Callable):
             pass
 
-        def over_limit(self) -> bool:
+        def over_budget(self) -> bool:
             """超过本金上限 or 超过亏损上限"""
             cfg = self.Bus.Cfg
             pos = self.Bus.curr_pos()
@@ -455,7 +455,7 @@ class Broker:
                 return 0
             return 100
 
-        def log(self, amount: float, level: int):
+        def log(self, level: int, amount: float):
             """添加日志"""
             curr_min = self.Bus.curr_min()
             Log(curr_min).info(amount, level).add_to(self.Bus.Log)
@@ -463,73 +463,67 @@ class Broker:
     class Turn(B):
         def is_buy(self) -> bool:
             cfg = self.Bus.Cfg
-            pos = self.Bus.curr_pos()
             curr_day = self.Bus.curr_day()
             curr_min = self.Bus.curr_min()
 
-            if curr_min[K.Bar.datetime].time() < time(9, 35, 0):
-                # 前5分钟不买入
-                return False
-            if self.over_limit():
-                # 超过亏损上限 or 超过本金上限
-                return False
-            if curr_day[K.Smma.fast] <= curr_day[K.Smma.slow]:
-                # 日线下跌
-                return False
-            if curr_min[K.Ema.fast] <= curr_min[K.Ema.slow]:
-                # 分钟线下跌
-                return False
-            if curr_min[K.Macd.macd] < cfg.Rise.macd_limit:
-                # 小于MACD值下限
-                return False
+            # 前5分钟不买入
+            if curr_min[K.Bar.datetime].time() < time(9, 35, 0): return False
+            # 超过亏损上限 or 超过本金上限
+            if self.over_budget(): return False
+            # 日线下跌
+            if curr_day[K.Smma.fast] <= curr_day[K.Smma.slow]: return False
+            # 分钟线下跌
+            if curr_min[K.Ema.fast] <= curr_min[K.Ema.slow]: return False
+            # 小于MACD值下限
+            if curr_min[K.Macd.macd] < cfg.Rise.macd_limit: return False
             # 涨幅未达到阈值 or 重复操作
             level = self.__rise_level()
-            if level == -1 or turn.rise_lots[level] == 0:
-                return False
+            turn = curr_min[K.Turn.turns][-1]
+            if level == -1 or turn.add_quotas[level] == 0: return False
             # 决定买入
             return True
 
         def is_sell(self) -> bool:
-            cfg = self.Bus.Cfg
-            pos = self.Bus.curr_pos()
             curr_min = self.Bus.curr_min()
-            if self.has_no_amount():
-                # 没有可用持仓
-                return False
-            if curr_min[K.Ema.fast] >= curr_min[K.Ema.slow]:
-                # 分钟线上涨
-                return False
+
+            # 没有可用持仓
+            if self.has_no_amount(): return False
+            # 分钟线上涨
+            if curr_min[K.Ema.fast] >= curr_min[K.Ema.slow]: return False
             # 跌幅未达到阈值 or 重复操作
             level = self.__fall_level()
-            if level == -1 or turn.fall_lots[level] == 0:
-                return False
+            turn = curr_min[K.Turn.turns][-1]
+            if level == -1 or turn.sub_quotas[level] == 0: return False
             # 决定卖出
             return True
 
         def do_buy(self, func: Callable):
             """执行买入"""
             cfg = self.Bus.Cfg
-            _, _, turn = self.Bus.bars()
+            curr_min = self.Bus.curr_min()
+            turn = curr_min[K.Turn.turns][-1]
+            lots = turn.add_quotas
             level = self.__rise_level()
-            lots = turn.rise_lots
-            buy_amount = cfg.Bas.base_funds / self.Bus.MinSet.base_price * lots[level]
+            buy_amount = max(cfg.Bas.base_funds * lots[level], cfg.Bas.foot_funds) / cfg.Bas.base_price
             amount = round(buy_amount / 100) * 100
 
             # 执行买入
             func(self.Bus.symbol, amount)
             lots[level] = 0.0
+            self.log(level, amount)
 
         def do_sell(self, func: Callable):
             """执行卖出"""
-            _, _, turn = self.Bus.bars()
-            level = self.__fall_level()
+            cfg = self.Bus.Cfg
+            curr_min = self.Bus.curr_min()
+            turn = curr_min[K.Turn.turns][-1]
             lots = turn.fall_lots
+            level = self.__fall_level()
 
             # 最小数量：根据基准本金
-            today = self.Bus.MinSet
-            min_qty = self.Bus.Cfg.Pos.base_principal / today.base_price * lots[level]
+            min_qty = max(cfg.Bas.base_funds * lots[level], cfg.Bas.foot_funds) / cfg.Bas.base_price
             # 减仓数量：根据当日初始可用持仓
-            cur_qty = today.base_amount * lots[level]
+            cur_qty = cfg.Bas.base_amount * lots[level]
             # 避免低仓位时，还分多次减仓
             sell_qty = max(min_qty, cur_qty)
             # 不得超过当前可用持仓
@@ -540,28 +534,21 @@ class Broker:
             # 执行卖出
             func(self.Bus.symbol, -amount)
             lots[level] = 0.0
+            self.log(level, amount)
 
         def __rise_level(self):
             """当前上涨等级"""
-            curr_min = self.Bus.curr_min()
-            mark = node.Mark
-            if mark.rise_level == -2:
-                mark.rise_level = self.__calc_level(self.Bus.Cfg.Rise.thresholds)
-            return mark.rise_level
+            return self.__calc_level(self.Bus.Cfg.Rise.thresholds)
 
         def __fall_level(self):
             """当前下跌等级"""
-            _, node, _ = self.Bus.bars()
-            mark = node.Mark
-            if mark.fall_level == -2:
-                mark.fall_level = self.__calc_level(self.Bus.Cfg.Fall.thresholds)
-            return mark.fall_level
+            return self.__calc_level(self.Bus.Cfg.Fall.thresholds)
 
         def __calc_level(self, thresholds):
             """计算涨跌等级"""
-            _, node, turn = self.Bus.bars()
-            diff_value = abs(node.turn_ema - turn.turn_ema)
-            diff_ratio = round(diff_value / self.Bus.MinSet.base_price, 4)
+            curr_min = self.Bus.curr_min()
+            diff_value = abs(curr_min[K.Ema.fast] - curr_min[K.Turn.turn_ema])
+            diff_ratio = round(diff_value / self.Bus.Cfg.Bas.base_price, 4)
             for threshold in reversed(thresholds):
                 if diff_ratio > threshold:
                     return thresholds.index(threshold)
@@ -571,10 +558,11 @@ class Broker:
 class Config:
     class _Bas:
         def __init__(self):
-            self.base_funds = 8000  # 基础资金
             self.cost_limit = 1.50  # 成本上限（比例）
             self.loss_limit = 0.15  # 亏损上限（比例）
             self.gain_limit = 0.05  # 盈利上限（比例）
+            self.foot_funds = 3000  # 最小金额
+            self.base_funds = 8000  # 基准资金
             self.base_price = 0.00  # 基准价格
             self.base_amount = 0.0  # 基准持仓
 
