@@ -76,8 +76,7 @@ class K:
         turn_val = 'turn.turn_val'
         turn_idx = 'turn.turn_idx'
         turn_ema = 'turn.turn_ema'
-        nodes = 'turn.nodes'
-        turns = 'turn.turns'
+        turn_box = 'turn.turn_box'
 
 
 ############################################################
@@ -112,6 +111,8 @@ class Bar:
             K.Bar.low: self.low,
         }
 
+
+class Box:
     class Node:
         def __init__(self):
             self.node_idx = 0  # 节点索引
@@ -129,28 +130,33 @@ class Bar:
             self.sub_quotas = []
 
             # 最大/小顶点，用于判断是否有效的拐点
-            self.MaxApex: Bar.Node | None = None
-            self.MinApex: Bar.Node | None = None
+            self.MaxApex: Box.Node | None = None
+            self.MinApex: Box.Node | None = None
 
-        def max_apex(self, apex: Bar.Node, threshold: float):
+        def max_apex(self, apex: Box.Node, threshold: float):
             """到下一拐点前：最大的凸点"""
             if apex.node_ema - self.turn_ema >= threshold:
                 if self.MaxApex is None or apex.node_ema > self.MaxApex.node_ema:
                     self.MaxApex = apex
 
-        def min_apex(self, apex: Bar.Node, threshold: float):
+        def min_apex(self, apex: Box.Node, threshold: float):
             """到下一拐点前：最小的凹点"""
             if self.turn_ema - apex.node_ema >= threshold:
                 if self.MinApex is None or apex.node_ema < self.MinApex.node_ema:
                     self.MinApex = apex
 
-        def is_peak(self, node: Bar.Node, threshold):
+        def is_peak(self, node: Box.Node, threshold):
             """是否波峰"""
             return self.MaxApex and self.MaxApex.node_ema - node.node_ema >= threshold
 
-        def is_valley(self, node: Bar.Node, threshold):
+        def is_valley(self, node: Box.Node, threshold):
             """是否波谷"""
             return self.MinApex and node.node_ema - self.MinApex.node_ema >= threshold
+
+    class TurnBox:
+        def __init__(self):
+            self.nodes: list[Box.Node] = []
+            self.turns: list[Box.Turn] = []
 
 
 class Pos:
@@ -304,14 +310,14 @@ class Line:
             return round(value, 4)
 
     class Turn(L):
-        def new_node(self, df: pd.DataFrame) -> Bar.Node:
-            node = Bar.Node()
+        def new_node(self, df: pd.DataFrame) -> Box.Node:
+            node = Box.Node()
             node.node_idx = df.index[-1]
             node.node_ema = self.get(df, K.Ema.fast, -1)
             return node
 
-        def new_turn(self, node: Bar.Node) -> Bar.Turn:
-            turn = Bar.Turn()
+        def new_turn(self, node: Box.Node) -> Box.Turn:
+            turn = Box.Turn()
             turn.turn_idx = node.node_idx
             turn.turn_ema = node.node_ema
             turn.turn_val = node.apex_val
@@ -322,29 +328,28 @@ class Line:
         def first(self, df: pd.DataFrame):
             node = self.new_node(df)
             turn = self.new_turn(node)
+            turn_box = Box.TurnBox()
+            turn_box.nodes.append(node)
+            turn_box.turns.append(turn)
 
-            df[K.Turn.turn_val] = 0
+            df[K.Turn.turn_val] = -2
             df[K.Turn.turn_idx] = df.index[-1]
             df[K.Turn.turn_ema] = node.node_ema
-            df[K.Turn.nodes] = pd.Series(dtype=object)
-            df[K.Turn.turns] = pd.Series(dtype=object)
-            self.set(df, K.Turn.nodes, -1, [node])
-            self.set(df, K.Turn.turns, -1, [turn])
+            df[K.Turn.turn_box] = pd.Series(dtype=object)
+            self.set(df, K.Turn.turn_box, -1, turn_box)
 
         def next(self, df: pd.DataFrame):
-            nodes: list[Bar.Node] = self.get(df, K.Turn.nodes, -2)
-            turns: list[Bar.Turn] = self.get(df, K.Turn.turns, -2)
-
             # 先预设值
             turn_idx = self.get(df, K.Turn.turn_idx, -2)
             turn_ema = self.get(df, K.Turn.turn_ema, -2)
+            turn_box = self.get(df, K.Turn.turn_box, -2)
             self.set(df, K.Turn.turn_val, -1, 0)
             self.set(df, K.Turn.turn_idx, -1, turn_idx)
             self.set(df, K.Turn.turn_ema, -1, turn_ema)
-            self.set(df, K.Turn.nodes, -1, nodes)
-            self.set(df, K.Turn.turns, -1, turns)
+            self.set(df, K.Turn.turn_box, -1, turn_box)
 
             # 跳过连续相等的节点
+            nodes = turn_box.nodes
             node = self.new_node(df)
             if node.node_ema == nodes[-1].node_ema:
                 return
@@ -359,8 +364,9 @@ class Line:
 
         def _calc_turn(self, df: pd.DataFrame):
             """计算拐点"""
-            nodes: list[Bar.Node] = self.get(df, K.Turn.nodes, -1)
-            turns: list[Bar.Turn] = self.get(df, K.Turn.turns, -1)
+            turn_box = self.get(df, K.Turn.turn_box, -1)
+            nodes = turn_box.nodes
+            turns = turn_box.turns
 
             # 最小振幅价格差
             base_price = self.Cfg.Bas.base_price
@@ -381,7 +387,7 @@ class Line:
 
             # 起始拐点
             first_turn = turns[0]
-            if first_turn.turn_val == 0:
+            if first_turn.turn_val == -2:
                 diff = round(first_turn.turn_ema - last_node.node_ema, 4)
                 if abs(diff) > threshold:
                     first_turn.turn_val = 1 if diff > 0 else -1
