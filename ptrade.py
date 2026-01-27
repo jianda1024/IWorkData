@@ -30,8 +30,13 @@ import pandas as pd
 
 
 class K:
-    class Bar:
+    class Bas:
+        symbol = 'symbol'
         datetime = 'datetime'
+        base_price = 'base_price'
+        base_amount = 'base_amount'
+
+    class Bar:
         volume = 'bar.volume'
         money = 'bar.money'
         price = 'bar.price'
@@ -73,9 +78,9 @@ class K:
         macd = 'macd.macd'
 
     class Turn:
-        turn_val = 'turn.turn_val'
+        turn_lvl = 'turn.turn_lvl'
         turn_idx = 'turn.turn_idx'
-        turn_ema = 'turn.turn_ema'
+        turn_val = 'turn.turn_val'
         turn_box = 'turn.turn_box'
 
 
@@ -101,7 +106,7 @@ class Bar:
 
     def _bar_dict(self):
         return {
-            K.Bar.datetime: self.datetime,
+            K.Bas.datetime: self.datetime,
             K.Bar.volume: self.volume,
             K.Bar.money: self.money,
             K.Bar.price: self.price,
@@ -116,14 +121,14 @@ class Box:
     class Node:
         def __init__(self):
             self.node_idx = 0  # 节点索引
-            self.node_ema = 0  # 节点均值
-            self.apex_val = 0  # 顶点标记
+            self.node_val = 0  # 节点均值
+            self.node_lvl = 0  # 节点标记
 
     class Turn:
         def __init__(self):
             self.turn_idx = 0  # 拐点索引
-            self.turn_ema = 0  # 拐点均值
-            self.turn_val = 0  # 拐点标记
+            self.turn_val = 0  # 拐点均值
+            self.turn_lvl = 0  # 拐点标记
 
             # 加/减仓额度，用于避免重复交易
             self.add_quotas = []
@@ -135,23 +140,23 @@ class Box:
 
         def max_apex(self, apex: Box.Node, threshold: float):
             """到下一拐点前：最大的凸点"""
-            if apex.node_ema - self.turn_ema >= threshold:
-                if self.MaxApex is None or apex.node_ema > self.MaxApex.node_ema:
+            if apex.node_val - self.turn_val >= threshold:
+                if self.MaxApex is None or apex.node_val > self.MaxApex.node_val:
                     self.MaxApex = apex
 
         def min_apex(self, apex: Box.Node, threshold: float):
             """到下一拐点前：最小的凹点"""
-            if self.turn_ema - apex.node_ema >= threshold:
-                if self.MinApex is None or apex.node_ema < self.MinApex.node_ema:
+            if self.turn_val - apex.node_val >= threshold:
+                if self.MinApex is None or apex.node_val < self.MinApex.node_val:
                     self.MinApex = apex
 
         def is_peak(self, node: Box.Node, threshold):
             """是否波峰"""
-            return self.MaxApex and self.MaxApex.node_ema - node.node_ema >= threshold
+            return self.MaxApex and self.MaxApex.node_val - node.node_val >= threshold
 
         def is_valley(self, node: Box.Node, threshold):
             """是否波谷"""
-            return self.MinApex and node.node_ema - self.MinApex.node_ema >= threshold
+            return self.MinApex and node.node_val - self.MinApex.node_val >= threshold
 
     class TurnBox:
         def __init__(self):
@@ -189,9 +194,9 @@ class Pos:
 
 class Log:
     def __init__(self, info: dict):
-        self.node_idx = info[K.Bar.datetime]
+        self.node_idx = info[K.Bas.datetime]
         self.turn_idx = info[K.Turn.turn_idx]
-        self.turn_val = info[K.Turn.turn_val]
+        self.turn_lvl = info[K.Turn.turn_lvl]
         self.amount = 0
         self.level = 0
         self.type = 0
@@ -214,7 +219,7 @@ class Log:
         return {
             K.Log.node_idx: self.node_idx,
             K.Log.turn_idx: self.turn_idx,
-            K.Log.turn_val: self.turn_val,
+            K.Log.turn_val: self.turn_lvl,
             K.Log.amount: self.amount,
             K.Log.level: self.level,
             K.Log.type: self.type,
@@ -223,7 +228,8 @@ class Log:
 
 class Line:
     class L(ABC):
-        def __init__(self, cfg: Config):
+        def __init__(self, cfg: Config, symbol: str):
+            self.symbol = symbol
             self.Cfg: Config = cfg
 
         @staticmethod
@@ -313,14 +319,14 @@ class Line:
         def new_node(self, df: pd.DataFrame) -> Box.Node:
             node = Box.Node()
             node.node_idx = df.index[-1]
-            node.node_ema = self.get(df, K.Ema.fast, -1)
+            node.node_val = self.get(df, K.Ema.fast, -1)
             return node
 
         def new_turn(self, node: Box.Node) -> Box.Turn:
             turn = Box.Turn()
             turn.turn_idx = node.node_idx
-            turn.turn_ema = node.node_ema
-            turn.turn_val = node.apex_val
+            turn.turn_val = node.node_val
+            turn.turn_lvl = node.node_lvl
             turn.add_quotas = copy.copy(self.Cfg.Rise.add_quotas)
             turn.sub_quotas = copy.copy(self.Cfg.Fall.sub_quotas)
             return turn
@@ -328,30 +334,31 @@ class Line:
         def first(self, df: pd.DataFrame):
             node = self.new_node(df)
             turn = self.new_turn(node)
+            turn.turn_lvl = -2
             turn_box = Box.TurnBox()
             turn_box.nodes.append(node)
             turn_box.turns.append(turn)
 
-            df[K.Turn.turn_val] = -2
-            df[K.Turn.turn_idx] = df.index[-1]
-            df[K.Turn.turn_ema] = node.node_ema
+            df[K.Turn.turn_lvl] = node.node_lvl
+            df[K.Turn.turn_idx] = node.node_idx
+            df[K.Turn.turn_val] = node.node_val
             df[K.Turn.turn_box] = pd.Series(dtype=object)
             self.set(df, K.Turn.turn_box, -1, turn_box)
 
         def next(self, df: pd.DataFrame):
             # 先预设值
             turn_idx = self.get(df, K.Turn.turn_idx, -2)
-            turn_ema = self.get(df, K.Turn.turn_ema, -2)
+            turn_val = self.get(df, K.Turn.turn_val, -2)
             turn_box = self.get(df, K.Turn.turn_box, -2)
-            self.set(df, K.Turn.turn_val, -1, 0)
+            self.set(df, K.Turn.turn_lvl, -1, 0)
             self.set(df, K.Turn.turn_idx, -1, turn_idx)
-            self.set(df, K.Turn.turn_ema, -1, turn_ema)
+            self.set(df, K.Turn.turn_val, -1, turn_val)
             self.set(df, K.Turn.turn_box, -1, turn_box)
 
             # 跳过连续相等的节点
             nodes = turn_box.nodes
             node = self.new_node(df)
-            if node.node_ema == nodes[-1].node_ema:
+            if node.node_val == nodes[-1].node_val:
                 return
 
             # 节点数据不得小于3条
@@ -369,7 +376,7 @@ class Line:
             turns = turn_box.turns
 
             # 最小振幅价格差
-            base_price = self.Cfg.Bas.base_price
+            base_price = self.Cfg.get(self.symbol, K.Bas.base_price)
             least_wave = self.Cfg.Turn.least_wave
             threshold = round(base_price * least_wave, 4)
 
@@ -378,27 +385,27 @@ class Line:
             midd_node = nodes[-2]
             last_node = nodes[-1]
             last_turn = turns[-1]
-            if prev_node.node_ema < midd_node.node_ema > last_node.node_ema:
-                midd_node.apex_val = 1
+            if prev_node.node_val < midd_node.node_val > last_node.node_val:
+                midd_node.node_lvl = 1
                 last_turn.max_apex(midd_node, threshold)
-            elif prev_node.node_ema > midd_node.node_ema < last_node.node_ema:
-                midd_node.apex_val = -1
+            elif prev_node.node_val > midd_node.node_val < last_node.node_val:
+                midd_node.node_lvl = -1
                 last_turn.min_apex(midd_node, threshold)
 
             # 起始拐点
             first_turn = turns[0]
-            if first_turn.turn_val == -2:
-                diff = round(first_turn.turn_ema - last_node.node_ema, 4)
+            if first_turn.turn_lvl == -2:
+                diff = round(first_turn.turn_val - last_node.node_val, 4)
                 if abs(diff) > threshold:
-                    first_turn.turn_val = 1 if diff > 0 else -1
-                    self.set(df, K.Turn.turn_val, 0, first_turn.turn_val)
+                    first_turn.turn_lvl = 1 if diff > 0 else -1
+                    self.set(df, K.Turn.turn_lvl, 0, first_turn.turn_lvl)
                 return
 
             # 计算拐点
             apex = None
             if last_turn.is_peak(last_node, threshold):
                 apex = last_turn.MaxApex
-            elif last_turn.is_peak(midd_node, threshold):
+            elif last_turn.is_valley(midd_node, threshold):
                 apex = last_turn.MinApex
             if apex is None:
                 return
@@ -407,9 +414,9 @@ class Line:
 
             # 更新df
             idx = df.index.get_loc(new_turn.turn_idx)
-            self.set(df, K.Turn.turn_val, idx, new_turn.turn_val)
+            self.set(df, K.Turn.turn_lvl, idx, new_turn.turn_lvl)
             self.set(df, K.Turn.turn_idx, -1, new_turn.turn_idx)
-            self.set(df, K.Turn.turn_ema, -1, new_turn.turn_ema)
+            self.set(df, K.Turn.turn_val, -1, new_turn.turn_val)
 
         def _calc(self, price: float, period: int, prev_val: float):
             pass
@@ -473,7 +480,7 @@ class Broker:
             curr_min = self.Bus.curr_min()
 
             # 前5分钟不买入
-            if curr_min[K.Bar.datetime].time() < time(9, 35, 0): return False
+            if curr_min[K.Bas.datetime].time() < time(9, 35, 0): return False
             # 超过亏损上限 or 超过本金上限
             if self.over_budget(): return False
             # 日线下跌
@@ -484,7 +491,7 @@ class Broker:
             if curr_min[K.Macd.macd] < cfg.Rise.macd_limit: return False
             # 涨幅未达到阈值 or 重复操作
             level = self.__rise_level()
-            turn = curr_min[K.Turn.turns][-1]
+            turn = curr_min[K.Turn.turn_box].turns[-1]
             if level == -1 or turn.add_quotas[level] == 0: return False
             # 决定买入
             return True
@@ -498,7 +505,7 @@ class Broker:
             if curr_min[K.Ema.fast] >= curr_min[K.Ema.slow]: return False
             # 跌幅未达到阈值 or 重复操作
             level = self.__fall_level()
-            turn = curr_min[K.Turn.turns][-1]
+            turn = curr_min[K.Turn.turn_box].turns[-1]
             if level == -1 or turn.sub_quotas[level] == 0: return False
             # 决定卖出
             return True
@@ -507,10 +514,11 @@ class Broker:
             """执行买入"""
             cfg = self.Bus.Cfg
             curr_min = self.Bus.curr_min()
-            turn = curr_min[K.Turn.turns][-1]
+            turn = curr_min[K.Turn.turn_box].turns[-1]
             lots = turn.add_quotas
             level = self.__rise_level()
-            buy_amount = max(cfg.Bas.base_funds * lots[level], cfg.Bas.foot_funds) / cfg.Bas.base_price
+            base_price = cfg.get(self.Bus.symbol, K.Bas.base_price)
+            buy_amount = max(cfg.Bas.base_funds * lots[level], cfg.Bas.foot_funds) / base_price
             amount = round(buy_amount / 100) * 100
 
             # 执行买入
@@ -522,14 +530,16 @@ class Broker:
             """执行卖出"""
             cfg = self.Bus.Cfg
             curr_min = self.Bus.curr_min()
-            turn = curr_min[K.Turn.turns][-1]
+            turn = curr_min[K.Turn.turn_box].turns[-1]
             lots = turn.fall_lots
             level = self.__fall_level()
 
             # 最小数量：根据基准本金
-            min_qty = max(cfg.Bas.base_funds * lots[level], cfg.Bas.foot_funds) / cfg.Bas.base_price
+            base_price = cfg.get(self.Bus.symbol, K.Bas.base_price)
+            min_qty = max(cfg.Bas.base_funds * lots[level], cfg.Bas.foot_funds) / base_price
             # 减仓数量：根据当日初始可用持仓
-            cur_qty = cfg.Bas.base_amount * lots[level]
+            base_amount = cfg.get(self.Bus.symbol, K.Bas.base_amount)
+            cur_qty = base_amount * lots[level]
             # 避免低仓位时，还分多次减仓
             sell_qty = max(min_qty, cur_qty)
             # 不得超过当前可用持仓
@@ -553,8 +563,9 @@ class Broker:
         def __calc_level(self, thresholds):
             """计算涨跌等级"""
             curr_min = self.Bus.curr_min()
-            diff_value = abs(curr_min[K.Ema.fast] - curr_min[K.Turn.turn_ema])
-            diff_ratio = round(diff_value / self.Bus.Cfg.Bas.base_price, 4)
+            base_price = self.Bus.Cfg.get(self.Bus.symbol, K.Bas.base_price)
+            diff_value = abs(curr_min[K.Ema.fast] - curr_min[K.Turn.turn_val])
+            diff_ratio = round(diff_value / base_price, 4)
             for threshold in reversed(thresholds):
                 if diff_ratio > threshold:
                     return thresholds.index(threshold)
@@ -569,8 +580,6 @@ class Config:
             self.gain_limit = 0.05  # 盈利上限（比例）
             self.foot_funds = 3000  # 最小金额
             self.base_funds = 8000  # 基准资金
-            self.base_price = 0.00  # 基准价格
-            self.base_amount = 0.0  # 基准持仓
 
     class _Ema:
         def __init__(self):
@@ -603,7 +612,7 @@ class Config:
             self.sub_quotas = [0.300, 0.400, 0.300]  # 减仓额度（比例）
             self.thresholds = [0.004, 0.007, 0.010]  # 减仓阈值（比例）
 
-    def __init__(self):
+    def __init__(self, broker):
         self.Bas: Config._Bas = Config._Bas()
         self.Ema: Config._Ema = Config._Ema()
         self.Smma: Config._Smma = Config._Smma()
@@ -612,13 +621,21 @@ class Config:
         self.Rise: Config._Rise = Config._Rise()
         self.Fall: Config._Fall = Config._Fall()
 
+        self.broker = broker  # 经纪人
+        self._stock = {}  # 股票私有配置
+
+    def set(self, symbol, key, value):
+        self._stock[symbol + '.' + key] = value
+
+    def get(self, symbol, key):
+        return self._stock.get(symbol + '.' + key)
+
 
 ############################################################
 class StockBus:
-    def __init__(self, symbol: str, broker: str, config: Config):
+    def __init__(self, symbol: str, config: Config):
         self.status = 0  # 状态：0-Initial、1-Started、2-Running
         self.symbol = symbol  # 股票代码
-        self.broker = broker  # 经纪人
         self.Cfg = config  # 配置信息
         self.Pos = None  # 仓位数据
         self.Day = None  # 日线数据
@@ -642,37 +659,40 @@ class StockMarket:
 
     def prepare(self, pos, bars):
         # 日线数据
-        cfg = self.Bus.Cfg
+        config = self.Bus.Cfg
+        symbol = self.Bus.symbol
         day = Bar(bars[0]).new_df()
-        Line.Smma(cfg).first(day)
+        Line.Smma(config, symbol).first(day)
         for bar in bars[1:]:
             Bar(bar).add_to(day)
-            Line.Smma(cfg).next(day)
+            Line.Smma(config, symbol).next(day)
         self.Bus.Day = day
 
         # 仓位数据、基准价格、基准持仓
         cur_pos = Pos(pos, bars[-1])
         self.Bus.Log = Log.empty_df()
         self.Bus.Pos = cur_pos.new_df()
-        self.Bus.Cfg.Bas.base_price = round(bars[-1].close, 4)
-        self.Bus.Cfg.Bas.base_amount = cur_pos.avail_amount
+
+        config.set(symbol, K.Bas.base_price, round(bars[-1].close, 4))
+        config.set(symbol, K.Bas.base_amount, cur_pos.avail_amount)
         self.Bus.status = 1
 
     def running(self, pos, bar):
-        cfg = self.Bus.Cfg
+        config = self.Bus.Cfg
+        symbol = self.Bus.symbol
         Pos(pos, bar).add_to(self.Bus.Pos)
         if self.Bus.status == 2:
             Bar(bar).add_to(self.Bus.Min)
-            Line.Ema(cfg).next(self.Bus.Min)
-            Line.Macd(cfg).next(self.Bus.Min)
-            Line.Turn(cfg).next(self.Bus.Min)
+            Line.Ema(config, symbol).next(self.Bus.Min)
+            Line.Macd(config, symbol).next(self.Bus.Min)
+            Line.Turn(config, symbol).next(self.Bus.Min)
             return
 
         if self.Bus.status == 1:
             self.Bus.Min = Bar(bar).new_df()
-            Line.Ema(cfg).first(self.Bus.Min)
-            Line.Macd(cfg).first(self.Bus.Min)
-            Line.Turn(cfg).first(self.Bus.Min)
+            Line.Ema(config, symbol).first(self.Bus.Min)
+            Line.Macd(config, symbol).first(self.Bus.Min)
+            Line.Turn(config, symbol).first(self.Bus.Min)
             self.Bus.status = 2
             return
 
@@ -687,65 +707,84 @@ class StockMarket:
             self.Bkr.do_sell(func)
 
 
-class StockManager:
-    _markets: dict[str, StockMarket] = {}
-    _brokers: dict[str, Type[Broker.B]] = {
-        "Broker.Turn": Broker.Turn,
+class Admin:
+    markets: dict[str, StockMarket] = {}
+    brokers: dict[str, Type[Broker.B]] = {
+        'Broker.Turn': Broker.Turn,
+    }
+    configs: dict[str, Config] = {
+        "config": Config('Broker.Turn'),
+    }
+
+    # 黑名单/白名单
+    blacks: list[str] = ['515450.SS', '515100.SS']
+    whites: dict[str, str] = {
+        '159857.SZ': 'config'
     }
 
     @staticmethod
-    def market(bus: StockBus) -> StockMarket:
-        mkt = StockManager._markets.get(bus.symbol)
+    def market(symbol: str) -> StockMarket:
+        mkt = Admin.markets.get(symbol)
         if mkt is not None:
             return mkt
-        broker = StockManager._brokers[bus.broker](bus)
+        key = Admin.whites.get(symbol, 'config')
+        cfg = Admin.configs.get(key)
+        bus = StockBus(symbol, cfg)
+        broker = Admin.brokers[cfg.broker](bus)
         market = StockMarket(bus, broker)
-        StockManager._markets[bus.symbol] = market
+        Admin.markets[symbol] = market
         return market
 
     @staticmethod
-    def buses() -> list[StockBus]:
-        buses: list[StockBus] = []
-        config = Config()
-        symbols = ['159857.SZ']
-        for symbol in symbols:
-            bus = StockBus(symbol, 'Broker.Turn', config)
-            buses.append(bus)
-        return buses
+    def get_symbols(positions: dict) -> list[str]:
+        codes = list(Admin.whites)
+        if positions:
+            sids = [pos.sid for pos in positions.values()]
+            codes.extend(sids)
+        symbols = list(set(codes))
+        for symbol in Admin.blacks:
+            Admin.markets.pop(symbol, None)
+            symbols.remove(symbol)
+        return symbols
 
 
 ############################################################
 def initialize(context):
     """启动时执行一次"""
-    buses = StockManager.buses()
-    symbols = [bus.symbol for bus in buses]
-    g.buses = buses
-    g.symbols = symbols
-    set_universe(symbols)
     pass
 
 
 def before_trading_start(context, data):
     """每天交易开始之前执行一次"""
     positions = get_positions()
+    symbols = Admin.get_symbols(positions)
+    g.symbols = symbols
+    set_universe(symbols)
+
     history = get_history(60, frequency='1d')
-    for bus in g.buses:
-        df = history.query(f'code in ["{bus.symbol}"]')
-        pos = positions.get(bus.symbol)
+    for symbol in symbols:
+        df = history.query(f'code in ["{symbol}"]')
+        pos = positions.get(symbol)
         bars = [SimpleNamespace(datetime=idx, **row.to_dict()) for idx, row in df.iterrows()]
-        StockManager.market(bus).prepare(pos, bars)
+        Admin.market(symbol).prepare(pos, bars)
 
 
 def handle_data(context, data):
     """每个单位周期执行一次"""
     positions = context.portfolio.positions
-    for bus in g.buses:
-        bar = data[bus.symbol]
-        pos = positions.get(bus.symbol)
-        StockManager.market(bus).running(pos, bar)
-        StockManager.market(bus).trading(order)
+    for symbol in g.symbols:
+        bar = data[symbol]
+        pos = positions.get(symbol)
+        Admin.market(symbol).running(pos, bar)
+        Admin.market(symbol).trading(order)
 
 
 def after_trading_end(context, data):
     """每天交易结束之后执行一次"""
     pass
+
+
+def get_hold_stocks(positions: dict) -> list[dict]:
+    if not positions:
+        return []
+    return [pos.sid for pos in positions.values()]
