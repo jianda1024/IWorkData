@@ -424,8 +424,8 @@ class Line:
 
 class Broker:
     class B(ABC):
-        def __init__(self, bus: StockBus):
-            self.Bus: StockBus = bus
+        def __init__(self, bus: Bus):
+            self.Bus: Bus = bus
 
         @abstractmethod
         def is_buy(self) -> bool:
@@ -632,7 +632,7 @@ class Config:
 
 
 ############################################################
-class StockBus:
+class Bus:
     def __init__(self, symbol: str, config: Config):
         self.status = 0  # 状态：0-Initial、1-Started、2-Running
         self.symbol = symbol  # 股票代码
@@ -652,9 +652,9 @@ class StockBus:
         return self.Min.iloc[-1].to_dict()
 
 
-class StockMarket:
-    def __init__(self, bus: StockBus, bkr: Broker.B):
-        self.Bus: StockBus = bus
+class Market:
+    def __init__(self, bus: Bus, bkr: Broker.B):
+        self.Bus: Bus = bus
         self.Bkr: Broker.B = bkr
 
     def prepare(self, pos, bars):
@@ -707,8 +707,8 @@ class StockMarket:
             self.Bkr.do_sell(func)
 
 
-class Admin:
-    markets: dict[str, StockMarket] = {}
+class Manager:
+    markets: dict[str, Market] = {}
     brokers: dict[str, Type[Broker.B]] = {
         'Broker.Turn': Broker.Turn,
     }
@@ -723,27 +723,27 @@ class Admin:
     }
 
     @staticmethod
-    def market(symbol: str) -> StockMarket:
-        mkt = Admin.markets.get(symbol)
+    def market(symbol: str) -> Market:
+        mkt = Manager.markets.get(symbol)
         if mkt is not None:
             return mkt
-        key = Admin.whites.get(symbol, 'config')
-        cfg = Admin.configs.get(key)
-        bus = StockBus(symbol, cfg)
-        broker = Admin.brokers[cfg.broker](bus)
-        market = StockMarket(bus, broker)
-        Admin.markets[symbol] = market
+        key = Manager.whites.get(symbol, 'config')
+        cfg = Manager.configs.get(key)
+        bus = Bus(symbol, cfg)
+        broker = Manager.brokers[cfg.broker](bus)
+        market = Market(bus, broker)
+        Manager.markets[symbol] = market
         return market
 
     @staticmethod
     def get_symbols(positions: dict) -> list[str]:
-        codes = list(Admin.whites)
+        codes = list(Manager.whites)
         if positions:
             sids = [pos.sid for pos in positions.values()]
             codes.extend(sids)
         symbols = list(set(codes))
-        for symbol in Admin.blacks:
-            Admin.markets.pop(symbol, None)
+        for symbol in Manager.blacks:
+            Manager.markets.pop(symbol, None)
             symbols.remove(symbol)
         return symbols
 
@@ -757,7 +757,7 @@ def initialize(context):
 def before_trading_start(context, data):
     """每天交易开始之前执行一次"""
     positions = get_positions()
-    symbols = Admin.get_symbols(positions)
+    symbols = Manager.get_symbols(positions)
     g.symbols = symbols
     set_universe(symbols)
 
@@ -766,7 +766,7 @@ def before_trading_start(context, data):
         df = history.query(f'code in ["{symbol}"]')
         pos = positions.get(symbol)
         bars = [SimpleNamespace(datetime=idx, **row.to_dict()) for idx, row in df.iterrows()]
-        Admin.market(symbol).prepare(pos, bars)
+        Manager.market(symbol).prepare(pos, bars)
 
 
 def handle_data(context, data):
@@ -775,8 +775,8 @@ def handle_data(context, data):
     for symbol in g.symbols:
         bar = data[symbol]
         pos = positions.get(symbol)
-        Admin.market(symbol).running(pos, bar)
-        Admin.market(symbol).trading(order)
+        Manager.market(symbol).running(pos, bar)
+        Manager.market(symbol).trading(order)
 
 
 def after_trading_end(context, data):
