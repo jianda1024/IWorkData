@@ -29,7 +29,6 @@ from typing import Callable, Type, Any
 
 class K:
     class Bas:
-        symbol = 'symbol'
         datetime = 'datetime'
         base_price = 'base_price'
         base_amount = 'base_amount'
@@ -50,16 +49,6 @@ class K:
         last_price = 'last_price'
         valuation = 'valuation'
         principal = 'principal'
-
-    class Log:
-        datetime = 'datetime'
-        node_val = 'node_val'
-        turn_idx = 'turn_idx'
-        turn_val = 'turn_val'
-        turn_lvl = 'turn_lvl'
-        amount = 'amount'
-        level = 'level'
-        type = 'type'
 
     class Ema:
         fast = 'ema.fast'
@@ -84,12 +73,101 @@ class K:
         nodes = 'turn.nodes'
         turns = 'turn.turns'
 
-    class Trade:
-        buys = 'trade.buys'
-        sells = 'trade.sells'
+
+class Bin:
+    class Act:
+        def __init__(self, info: dict):
+            self.node_idx = info[K.Bas.datetime]
+            self.node_val = info[K.Ema.fast]
+            self.turn_idx = info[K.Turn.turn_idx]
+            self.turn_val = info[K.Turn.turn_val]
+            self.turn_lvl = info[K.Turn.turn_lvl]
+            self.price = info[K.Bar.price]
+            self.amount = 0
+            self.level = 0
+            self.type = 0
+
+        def info(self, amount: float, level: int):
+            self.amount = amount
+            self.level = level
+            self.type = 'Buy' if amount > 0 else 'Sell' if amount < 0 else 'Null'
+            return self
+
+        def __dict(self):
+            return self.__dict__
+
+    class Pos:
+        def __init__(self, pos, bar):
+            self.datetime_str = bar.datetime.strftime('%Y-%m-%d %H:%M:%S')
+            self.avail_amount = getattr(pos, 'enable_amount', 0.0)  # 可用持仓数量
+            self.total_amount = getattr(pos, 'amount', 0.0)  # 总持仓数量
+            self.cost_price = getattr(pos, 'cost_basis', 0.0)  # 成本价格
+            self.last_price = getattr(pos, 'last_sale_price', 0.0)  # 最新价格
+            self.valuation = round(self.total_amount * self.last_price, 2)  # 市值
+            self.principal = round(self.total_amount * self.cost_price, 2)  # 本金
+
+        def into(self, box: Bus):
+            box.add(self.datetime_str, self.__dict())
+
+        def __dict(self):
+            return {
+                K.Pos.avail_amount: self.avail_amount,
+                K.Pos.total_amount: self.total_amount,
+                K.Pos.cost_price: self.cost_price,
+                K.Pos.last_price: self.last_price,
+                K.Pos.valuation: self.valuation,
+                K.Pos.principal: self.principal,
+            }
+
+    class Bar:
+        def __init__(self, bar):
+            self.time_str = bar.datetime.strftime('%Y-%m-%d %H:%M:%S')
+            self.datetime = bar.datetime  # 时间
+            self.volume = round(bar.volume, 2)  # 交易量
+            self.money = round(bar.money, 2)  # 交易金额
+            self.price = round(bar.price, 4)  # 最新价
+            self.close = round(bar.close, 4)  # 收盘价
+            self.open = round(bar.open, 4)  # 开盘价
+            self.high = round(bar.high, 4)  # 最高价
+            self.low = round(bar.low, 4)  # 最低价
+
+        def into(self, box: Bus):
+            box.add(self.time_str, self.__dict())
+
+        def __dict(self):
+            return {
+                K.Bas.datetime: self.datetime,
+                K.Bar.volume: self.volume,
+                K.Bar.money: self.money,
+                K.Bar.price: self.price,
+                K.Bar.close: self.close,
+                K.Bar.open: self.open,
+                K.Bar.high: self.high,
+                K.Bar.low: self.low,
+            }
+
+    class Node:
+        def __init__(self):
+            self.node_idx = ''  # 节点索引
+            self.node_val = 0  # 节点均值
+            self.node_lvl = 0  # 节点标记
+
+    class Turn:
+        def __init__(self):
+            self.turn_idx = ''  # 拐点索引
+            self.turn_val = 0  # 拐点均值
+            self.turn_lvl = 0  # 拐点标记
+
+            # 加/减仓额度，用于避免重复交易
+            self.add_quotas = []
+            self.sub_quotas = []
+
+            # 最大/小顶点，用于判断是否有效的拐点
+            self.MaxApex: Bin.Node | None = None
+            self.MinApex: Bin.Node | None = None
 
 
-class Box:
+class Bus:
     def __init__(self):
         self.keys: list[str] = []
         self.data: dict[str, dict] = {}
@@ -118,99 +196,6 @@ class Box:
         self.data.clear()
 
 
-class Bar:
-    def __init__(self, bar):
-        self.time_str = bar.datetime.strftime('%Y-%m-%d %H:%M:%S')
-        self.datetime = bar.datetime  # 时间
-        self.volume = round(bar.volume, 2)  # 交易量
-        self.money = round(bar.money, 2)  # 交易金额
-        self.price = round(bar.price, 4)  # 最新价
-        self.close = round(bar.close, 4)  # 收盘价
-        self.open = round(bar.open, 4)  # 开盘价
-        self.high = round(bar.high, 4)  # 最高价
-        self.low = round(bar.low, 4)  # 最低价
-
-    def into(self, box: Box):
-        box.add(self.time_str, self.__dict())
-
-    def __dict(self):
-        return {
-            K.Bas.datetime: self.datetime,
-            K.Bar.volume: self.volume,
-            K.Bar.money: self.money,
-            K.Bar.price: self.price,
-            K.Bar.close: self.close,
-            K.Bar.open: self.open,
-            K.Bar.high: self.high,
-            K.Bar.low: self.low,
-        }
-
-    class Node:
-        def __init__(self):
-            self.node_idx = ''  # 节点索引
-            self.node_val = 0  # 节点均值
-            self.node_lvl = 0  # 节点标记
-
-    class Turn:
-        def __init__(self):
-            self.turn_idx = ''  # 拐点索引
-            self.turn_val = 0  # 拐点均值
-            self.turn_lvl = 0  # 拐点标记
-
-            # 加/减仓额度，用于避免重复交易
-            self.add_quotas = []
-            self.sub_quotas = []
-
-            # 最大/小顶点，用于判断是否有效的拐点
-            self.MaxApex: Bar.Node | None = None
-            self.MinApex: Bar.Node | None = None
-
-
-class Pos:
-    def __init__(self, pos, bar):
-        self.datetime_str = bar.datetime.strftime('%Y-%m-%d %H:%M:%S')
-        self.avail_amount = getattr(pos, 'enable_amount', 0.0)  # 可用持仓数量
-        self.total_amount = getattr(pos, 'amount', 0.0)  # 总持仓数量
-        self.cost_price = getattr(pos, 'cost_basis', 0.0)  # 成本价格
-        self.last_price = getattr(pos, 'last_sale_price', 0.0)  # 最新价格
-        self.valuation = round(self.total_amount * self.last_price, 2)  # 市值
-        self.principal = round(self.total_amount * self.cost_price, 2)  # 本金
-
-    def into(self, box: Box):
-        box.add(self.datetime_str, self.__dict())
-
-    def __dict(self):
-        return {
-            K.Pos.avail_amount: self.avail_amount,
-            K.Pos.total_amount: self.total_amount,
-            K.Pos.cost_price: self.cost_price,
-            K.Pos.last_price: self.last_price,
-            K.Pos.valuation: self.valuation,
-            K.Pos.principal: self.principal,
-        }
-
-
-class Log:
-    def __init__(self, info: dict):
-        self.datetime = info[K.Bas.datetime]
-        self.node_val = info[K.Ema.fast]
-        self.turn_idx = info[K.Turn.turn_idx]
-        self.turn_val = info[K.Turn.turn_val]
-        self.turn_lvl = info[K.Turn.turn_lvl]
-        self.amount = 0
-        self.level = 0
-        self.type = 0
-
-    def info(self, amount: float, level: int):
-        self.amount = amount
-        self.level = level
-        self.type = 'Buy' if amount > 0 else 'Sell' if amount < 0 else 'Null'
-        return self
-
-    def __dict(self):
-        return self.__dict__
-
-
 class Line:
     class L(ABC):
         def __init__(self, cfg: Config):
@@ -221,23 +206,23 @@ class Line:
             pass
 
         @staticmethod
-        def _first(box: Box, key: str):
+        def _first(box: Bus, key: str):
             price = box.at(-1).get(K.Bar.close)
             box.set(-1, key, price)
 
-        def _next(self, box: Box, key: str, period: int):
+        def _next(self, box: Bus, key: str, period: int):
             price = box.at(-1).get(K.Bar.close)
             prev_val = box.at(-2).get(key)
             next_val = self._calc(price, period, prev_val)
             box.set(-1, key, next_val)
 
     class Ema(L):
-        def first(self, box: Box):
+        def first(self, box: Bus):
             self._first(box, K.Ema.fast)
             self._first(box, K.Ema.slow)
             return self
 
-        def next(self, box: Box):
+        def next(self, box: Bus):
             self._next(box, K.Ema.fast, self.cfg.ema.fast)
             self._next(box, K.Ema.slow, self.cfg.ema.slow)
 
@@ -247,12 +232,12 @@ class Line:
             return round(value, 4)
 
     class Smma(L):
-        def first(self, box: Box):
+        def first(self, box: Bus):
             self._first(box, K.Smma.fast)
             self._first(box, K.Smma.slow)
             return self
 
-        def next(self, box: Box):
+        def next(self, box: Bus):
             self._next(box, K.Smma.fast, self.cfg.smma.fast)
             self._next(box, K.Smma.slow, self.cfg.smma.slow)
 
@@ -261,7 +246,7 @@ class Line:
             return round(value, 4)
 
     class Macd(L):
-        def first(self, box: Box):
+        def first(self, box: Bus):
             self._first(box, K.Macd.fast)
             self._first(box, K.Macd.slow)
             box.set(-1, K.Macd.dif, 0)
@@ -269,12 +254,12 @@ class Line:
             box.set(-1, K.Macd.macd, 0)
             return self
 
-        def next(self, box: Box):
+        def next(self, box: Bus):
             self._next(box, K.Macd.fast, self.cfg.macd.fast)
             self._next(box, K.Macd.slow, self.cfg.macd.slow)
             self._next_macd(box)
 
-        def _next_macd(self, box: Box):
+        def _next_macd(self, box: Bus):
             period = self.cfg.macd.sign
             fast_ema = box.at(-1).get(K.Macd.fast)
             slow_ema = box.at(-1).get(K.Macd.slow)
@@ -299,14 +284,14 @@ class Line:
             self.threshold = 10000
 
         @staticmethod
-        def new_node(box: Box) -> Bar.Node:
-            node = Bar.Node()
+        def new_node(box: Bus) -> Bin.Node:
+            node = Bin.Node()
             node.node_idx = box.key(-1)
             node.node_val = box.at(-1).get(K.Ema.fast)
             return node
 
-        def new_turn(self, node: Bar.Node) -> Bar.Turn:
-            turn = Bar.Turn()
+        def new_turn(self, node: Bin.Node) -> Bin.Turn:
+            turn = Bin.Turn()
             turn.turn_idx = node.node_idx
             turn.turn_val = node.node_val
             turn.turn_lvl = node.node_lvl
@@ -314,7 +299,7 @@ class Line:
             turn.sub_quotas = copy.copy(self.cfg.fall.sub_quotas)
             return turn
 
-        def first(self, box: Box, ext: dict):
+        def first(self, box: Bus, ext: dict):
             node = self.new_node(box)
             turn = self.new_turn(node)
             turn.turn_lvl = -2
@@ -330,7 +315,7 @@ class Line:
             box.set(-1, K.Turn.turn_val, turn.turn_val)
             return self
 
-        def next(self, box: Box, ext: dict):
+        def next(self, box: Bus, ext: dict):
             # 先预设值
             turn_idx = box.at(-2).get(K.Turn.turn_idx)
             turn_val = box.at(-2).get(K.Turn.turn_val)
@@ -355,7 +340,7 @@ class Line:
             self._calc_apex(nodes, turns)
             self._calc_turn(nodes, turns, box)
 
-        def _calc_apex(self, nodes: list[Bar.Node], turns: list[Bar.Turn]):
+        def _calc_apex(self, nodes: list[Bin.Node], turns: list[Bin.Turn]):
             # 计算顶点
             node3 = nodes[-3]
             node2 = nodes[-2]
@@ -368,7 +353,7 @@ class Line:
                 node2.node_lvl = -1
                 self._min_apex(node2, turn1)
 
-        def _calc_turn(self, nodes: list[Bar.Node], turns: list[Bar.Turn], box: Box):
+        def _calc_turn(self, nodes: list[Bin.Node], turns: list[Bin.Turn], box: Bus):
             # 起始拐点
             first_turn = turns[0]
             if first_turn.turn_lvl == -2:
@@ -386,19 +371,19 @@ class Line:
                 box.set(-1, K.Turn.turn_idx, turn.turn_idx)
                 box.set(-1, K.Turn.turn_val, turn.turn_val)
 
-        def _max_apex(self, apex: Bar.Node, turn: Bar.Turn):
+        def _max_apex(self, apex: Bin.Node, turn: Bin.Turn):
             # 到下一拐点前：最大的凸点
             if apex.node_val - turn.turn_val >= self.threshold:
                 if turn.MaxApex is None or apex.node_val > turn.MaxApex.node_val:
                     turn.MaxApex = apex
 
-        def _min_apex(self, apex: Bar.Node, turn: Bar.Turn):
+        def _min_apex(self, apex: Bin.Node, turn: Bin.Turn):
             # 到下一拐点前：最小的凹点
             if turn.turn_val - apex.node_val >= self.threshold:
                 if turn.MinApex is None or apex.node_val < turn.MinApex.node_val:
                     turn.MinApex = apex
 
-        def _get_turn(self, node: Bar.Node, turn: Bar.Turn):
+        def _get_turn(self, node: Bin.Node, turn: Bin.Turn):
             if turn.MaxApex and turn.MaxApex.node_val - node.node_val >= self.threshold:
                 return self.new_turn(turn.MaxApex)
             if turn.MinApex and node.node_val - turn.MinApex.node_val >= self.threshold:
@@ -419,11 +404,11 @@ class Env:
 class Config:
     class _Bas:
         def __init__(self):
+            self.base_funds = 8000  # 基准资金
             self.cost_limit = 1.50  # 成本上限（比例）
             self.loss_limit = 0.15  # 亏损上限（比例）
             self.gain_limit = 0.05  # 盈利上限（比例）
-            self.foot_funds = 3000  # 最小金额
-            self.base_funds = 8000  # 基准资金
+            self.min_sell_funds = 3000  # 最小卖出金额
 
     class _Ema:
         def __init__(self):
@@ -467,10 +452,93 @@ class Config:
         self.fall: Config._Fall = Config._Fall()
 
 
-class Trader(ABC):
-    def __init__(self, cfg: Config, bkt: Bucket):
+class Biz:
+    def __init__(self, cfg: Config, tkt: Ticket):
         self.cfg = cfg
-        self.bkt = bkt
+        self.tkt = tkt
+
+    def adjust_sell_amount(self, sell_amount: int):
+        """最小的卖出数量"""
+        pos = self.now_pos()
+        base_price = self.tkt.extMap.get(K.Bas.base_price)
+        avail_amount = pos[K.Pos.avail_amount]
+
+        # 计算需要保留的数量
+        profit = pos[K.Pos.valuation] - pos[K.Pos.principal]  # 当前盈利
+        unavail_qty = pos[K.Pos.total_amount] - avail_amount  # 不可用持仓数量
+        profit_target = self.cfg.bas.base_funds * self.cfg.bas.gain_limit  # 盈利目标
+        retain_amount = 0 if unavail_qty == 0 and profit >= profit_target else 100
+
+        # 最小卖出数量
+        min_qty = self.cfg.bas.min_sell_funds / base_price
+        sell_qty = max(sell_amount, min_qty)
+
+        # 可用持仓数量充足
+        if avail_amount - retain_amount > sell_qty:
+            if avail_amount
+
+            return sell_qty
+
+        # 获取最低保留的底仓
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        # 判断是否清仓
+
+
+
+
+
+
+
+
+
+        # 低于3000元
+
+
+        # 底线
+        least_qty = round(10 / base_price) * 100
+        #
+
+
+        # 卖出金额最低不得小于1000元
+        least_qty = round(10 / base_price) * 100
+        # 如果有不可用持仓，则不清仓
+        if pos[K.Pos.total_amount] > pos[K.Pos.avail_amount] and :
+            return least_qty
+
+
+
+
+
+        # 如果有不可用持仓，则
+
+        # 获取底仓
+        pos = self.now_pos()
+        # 如果有不可用持仓
+        if pos[K.Pos.total_amount]>pos[K.Pos.avail_amount]:
+
+
+
+
+    def now_pos(self) -> dict:
+        return self.tkt.posBus.at(-1)
+
+class Trader(ABC):
+    def __init__(self, cfg: Config, tkt: Ticket):
+        self.cfg = cfg
+        self.tkt = tkt
 
     @abstractmethod
     def is_buy(self) -> bool:
@@ -513,16 +581,16 @@ class Trader(ABC):
     def log(self, level: int, amount: float):
         """添加日志"""
         curr_min = self.now_min()
-        log = Log(curr_min).info(amount, level)
+        log = Bin.Act(curr_min).info(amount, level)
 
     def now_pos(self) -> dict:
-        return self.bkt.posSet.at(-1)
+        return self.tkt.posBus.at(-1)
 
     def now_day(self) -> dict:
-        return self.bkt.daySet.at(-1)
+        return self.tkt.dayBus.at(-1)
 
     def now_min(self) -> dict:
-        return self.bkt.minSet.at(-1)
+        return self.tkt.minBus.at(-1)
 
 
 class TurnTrader(Trader):
@@ -546,7 +614,7 @@ class TurnTrader(Trader):
         if now_min[K.Macd.macd] < self.cfg.rise.upper_macd: return False
         # 涨幅未达到阈值 or 重复操作
         level = self.__rise_level()
-        turn = self.bkt.extMap.get(K.Turn.turns)[-1]
+        turn = self.tkt.extMap.get(K.Turn.turns)[-1]
         if level == -1 or turn.add_quotas[level] == 0: return False
         # 决定买入
         return True
@@ -564,38 +632,38 @@ class TurnTrader(Trader):
         if now_min[K.Macd.macd] < self.cfg.fall.lower_macd: return True
         # 跌幅未达到阈值 or 重复操作
         level = self.__fall_level()
-        turn = self.bkt.extMap.get(K.Turn.turns)[-1]
+        turn = self.tkt.extMap.get(K.Turn.turns)[-1]
         if level == -1 or turn.sub_quotas[level] == 0: return False
         # 决定卖出
         return True
 
     def do_buy(self, func: Callable):
         """执行买入"""
-        turn = self.bkt.extMap.get(K.Turn.turns)[-1]
+        turn = self.tkt.extMap.get(K.Turn.turns)[-1]
         lots = turn.add_quotas
         level = self.__rise_level()
 
-        base_price = self.bkt.extMap.get(K.Bas.base_price)
+        base_price = self.tkt.extMap.get(K.Bas.base_price)
         buy_amount = max(self.cfg.bas.base_funds * lots[level], self.cfg.bas.foot_funds) / base_price
         amount = round(buy_amount / 100) * 100
 
         # 执行买入
-        func(self.bkt.symbol, amount)
+        func(self.tkt.symbol, amount)
         lots[level] = 0.0
         self.log(level, amount)
 
     def do_sell(self, func: Callable):
         """执行卖出"""
         pos = self.now_pos()
-        turn = self.bkt.extMap.get(K.Turn.turns)[-1]
+        turn = self.tkt.extMap.get(K.Turn.turns)[-1]
         lots = turn.sub_quotas
         level = self.__fall_level()
 
         # 最小数量：根据基准本金
-        base_price = self.bkt.extMap.get(K.Bas.base_price)
+        base_price = self.tkt.extMap.get(K.Bas.base_price)
         min_qty = max(self.cfg.bas.base_funds * lots[level], self.cfg.bas.foot_funds) / base_price
         # 减仓数量：根据当日初始可用持仓
-        base_amount = self.bkt.extMap.get(K.Bas.base_amount)
+        base_amount = self.tkt.extMap.get(K.Bas.base_amount)
         cur_qty = base_amount * lots[level]
         # 避免低仓位时，还分多次减仓
         sell_qty = max(min_qty, cur_qty)
@@ -605,7 +673,7 @@ class TurnTrader(Trader):
         amount = round(sell_amount / 100) * 100 - self.remain_amount()
 
         # 执行卖出
-        func(self.bkt.symbol, -amount)
+        func(self.tkt.symbol, -amount)
         lots[level] = 0.0
         self.log(level, amount)
 
@@ -620,7 +688,7 @@ class TurnTrader(Trader):
     def __calc_level(self, thresholds):
         """计算涨跌等级"""
         curr_min = self.now_min()
-        base_price = self.bkt.extMap.get(K.Bas.base_price)
+        base_price = self.tkt.extMap.get(K.Bas.base_price)
         diff_value = abs(curr_min[K.Ema.fast] - curr_min[K.Turn.turn_val])
         diff_ratio = round(diff_value / base_price, 4)
         for threshold in reversed(thresholds):
@@ -630,28 +698,28 @@ class TurnTrader(Trader):
 
 
 ############################################################
-class Bucket:
+class Ticket:
     def __init__(self, symbol: str):
         self.symbol = symbol  # 股票代码
-        self.posSet = Box()  # 仓位数据
-        self.daySet = Box()  # 日线数据
-        self.minSet = Box()  # 分钟数据
-        self.logSet = Box()  # 日志数据
+        self.posBus = Bus()  # 仓位数据
+        self.dayBus = Bus()  # 日线数据
+        self.minBus = Bus()  # 分钟数据
+        self.actSet = []  # 操作数据
         self.extMap = {}  # 扩展信息
 
     def clear(self):
-        self.posSet.clear()
-        self.daySet.clear()
-        self.minSet.clear()
-        self.logSet.clear()
+        self.posBus.clear()
+        self.dayBus.clear()
+        self.minBus.clear()
+        self.actSet.clear()
         self.extMap.clear()
 
 
 class Market:
-    def __init__(self, config: Type[Config], trader: Type[Trader], bucket: Bucket):
-        self.bkt: Bucket = bucket
+    def __init__(self, config: Type[Config], trader: Type[Trader], ticket: Ticket):
+        self.tkt: Ticket = ticket
         self.cfg: Config = config()
-        self.biz: Trader = trader(self.cfg, self.bkt)
+        self.biz: Trader = trader(self.cfg, self.tkt)
         self.status = 0  # 状态：0-Initial、1-Started、2-Running
 
         self.line_ema = None
@@ -660,26 +728,26 @@ class Market:
         self.line_turn = None
 
     def prepare(self, bars):
-        self.bkt.clear()
+        self.tkt.clear()
         # 日线数据
-        Bar(bars[0]).into(self.bkt.daySet)
-        self.line_smma = Line.Smma(self.cfg).first(self.bkt.daySet)
+        Bin.Bar(bars[0]).into(self.tkt.dayBus)
+        self.line_smma = Line.Smma(self.cfg).first(self.tkt.dayBus)
         for bar in bars[1:]:
-            Bar(bar).into(self.bkt.daySet)
-            self.line_smma.next(self.bkt.daySet)
+            Bin.Bar(bar).into(self.tkt.dayBus)
+            self.line_smma.next(self.tkt.dayBus)
 
         # 基准价格
-        self.bkt.extMap[K.Bas.base_price] = round(bars[-1].close, 4)
+        self.tkt.extMap[K.Bas.base_price] = round(bars[-1].close, 4)
         self.status = 1
         return self
 
     def running(self, pos, bar):
         if self.status == 2:
-            Pos(pos, bar).into(self.bkt.posSet)
-            Bar(bar).into(self.bkt.minSet)
-            self.line_ema.next(self.bkt.minSet)
-            self.line_macd.next(self.bkt.minSet)
-            self.line_turn.next(self.bkt.minSet, self.bkt.extMap)
+            Bin.Pos(pos, bar).into(self.tkt.posBus)
+            Bin.Bar(bar).into(self.tkt.minBus)
+            self.line_ema.next(self.tkt.minBus)
+            self.line_macd.next(self.tkt.minBus)
+            self.line_turn.next(self.tkt.minBus, self.tkt.extMap)
             return
 
         if self.status == 0:
@@ -688,14 +756,14 @@ class Market:
 
         if self.status == 1:
             # 仓位数据、基准持仓
-            position = Pos(pos, bar)
-            position.into(self.bkt.posSet)
-            self.bkt.extMap[K.Bas.base_amount] = position.avail_amount
+            position = Bin.Pos(pos, bar)
+            position.into(self.tkt.posBus)
+            self.tkt.extMap[K.Bas.base_amount] = position.avail_amount
             # 分钟数据
-            Bar(bar).into(self.bkt.minSet)
-            self.line_ema = Line.Ema(self.cfg).first(self.bkt.minSet)
-            self.line_macd = Line.Macd(self.cfg).first(self.bkt.minSet)
-            self.line_turn = Line.Turn(self.cfg).first(self.bkt.minSet, self.bkt.extMap)
+            Bin.Bar(bar).into(self.tkt.minBus)
+            self.line_ema = Line.Ema(self.cfg).first(self.tkt.minBus)
+            self.line_macd = Line.Macd(self.cfg).first(self.tkt.minBus)
+            self.line_turn = Line.Turn(self.cfg).first(self.tkt.minBus, self.tkt.extMap)
             self.status = 2
 
     def trading(self, func: Callable):
@@ -707,7 +775,7 @@ class Market:
 
 
 class Manager:
-    buckets: dict[str, Bucket] = {}
+    tickets: dict[str, Ticket] = {}
     markets: dict[str, Market] = {}
     classes: dict[str, Type[Config | Trader]] = {
         "config": Config,
@@ -728,8 +796,8 @@ class Manager:
         biz = Manager.whites.get(symbol, Env('config', 'trader'))
         config = Manager.classes.get(biz.config)
         trader = Manager.classes.get(biz.trader)
-        bucket = Manager.buckets.setdefault(symbol, Bucket(symbol))
-        market = Manager.markets.setdefault(symbol, Market(config, trader, bucket))
+        ticket = Manager.tickets.setdefault(symbol, Ticket(symbol))
+        market = Manager.markets.setdefault(symbol, Market(config, trader, ticket))
         return market
 
     @staticmethod
