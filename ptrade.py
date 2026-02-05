@@ -76,25 +76,19 @@ class K:
 
 class Bin:
     class Act:
-        def __init__(self, info: dict):
-            self.node_idx = info[K.Bas.datetime]
-            self.node_val = info[K.Ema.fast]
-            self.turn_idx = info[K.Turn.turn_idx]
-            self.turn_val = info[K.Turn.turn_val]
-            self.turn_lvl = info[K.Turn.turn_lvl]
-            self.price = info[K.Bar.price]
+        def __init__(self, bar: dict):
+            self.node_val = bar[K.Ema.fast]
+            self.node_idx = bar[K.Bas.datetime]
+            self.turn_idx = bar[K.Turn.turn_idx]
+            self.turn_val = bar[K.Turn.turn_val]
+            self.turn_lvl = bar[K.Turn.turn_lvl]
             self.amount = 0
-            self.level = 0
-            self.type = 0
+            self.status = 0
 
-        def info(self, amount: float, level: int):
+        def order(self, amount: float):
+            self.status = 1 if amount > 0 else -1 if amount < 0 else 0
             self.amount = amount
-            self.level = level
-            self.type = 'Buy' if amount > 0 else 'Sell' if amount < 0 else 'Null'
             return self
-
-        def __dict(self):
-            return self.__dict__
 
     class Pos:
         def __init__(self, pos, bar):
@@ -408,7 +402,8 @@ class Config:
             self.cost_limit = 1.50  # 成本上限（比例）
             self.loss_limit = 0.15  # 亏损上限（比例）
             self.gain_limit = 0.05  # 盈利上限（比例）
-            self.min_sell_funds = 3000  # 最小卖出金额
+            self.start_qty = 3000  # 起步卖出金额
+            self.least_qty = 1000  # 最低卖出金额
 
     class _Ema:
         def __init__(self):
@@ -452,111 +447,12 @@ class Config:
         self.fall: Config._Fall = Config._Fall()
 
 
-class Biz:
-    def __init__(self, cfg: Config, tkt: Ticket):
-        self.cfg = cfg
-        self.tkt = tkt
-
-    def adjust_sell_amount(self, sell_amount: int):
-        """最小的卖出数量"""
-        pos = self.now_pos()
-        base_price = self.tkt.extMap.get(K.Bas.base_price)
-        avail_amount = pos[K.Pos.avail_amount]
-
-        # 计算需要保留的数量
-        profit = pos[K.Pos.valuation] - pos[K.Pos.principal]  # 当前盈利
-        unavail_qty = pos[K.Pos.total_amount] - avail_amount  # 不可用持仓数量
-        profit_target = self.cfg.bas.base_funds * self.cfg.bas.gain_limit  # 盈利目标
-        retain_amount = 0 if unavail_qty == 0 and profit >= profit_target else 100
-
-        # 最小卖出数量
-        min_qty = self.cfg.bas.min_sell_funds / base_price
-        sell_qty = max(sell_amount, min_qty)
-
-        # 可用持仓数量充足
-        if avail_amount - retain_amount > sell_qty:
-            if avail_amount
-
-            return sell_qty
-
-        # 获取最低保留的底仓
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-        # 判断是否清仓
-
-
-
-
-
-
-
-
-
-        # 低于3000元
-
-
-        # 底线
-        least_qty = round(10 / base_price) * 100
-        #
-
-
-        # 卖出金额最低不得小于1000元
-        least_qty = round(10 / base_price) * 100
-        # 如果有不可用持仓，则不清仓
-        if pos[K.Pos.total_amount] > pos[K.Pos.avail_amount] and :
-            return least_qty
-
-
-
-
-
-        # 如果有不可用持仓，则
-
-        # 获取底仓
-        pos = self.now_pos()
-        # 如果有不可用持仓
-        if pos[K.Pos.total_amount]>pos[K.Pos.avail_amount]:
-
-
-
-
-    def now_pos(self) -> dict:
-        return self.tkt.posBus.at(-1)
-
 class Trader(ABC):
     def __init__(self, cfg: Config, tkt: Ticket):
         self.cfg = cfg
         self.tkt = tkt
 
-    @abstractmethod
-    def is_buy(self) -> bool:
-        pass
-
-    @abstractmethod
-    def is_sell(self) -> bool:
-        pass
-
-    @abstractmethod
-    def do_buy(self, func: Callable):
-        pass
-
-    @abstractmethod
-    def do_sell(self, func: Callable):
-        pass
-
-    def over_budget(self) -> bool:
+    def is_over_budget(self) -> bool:
         """超过本金上限 or 超过亏损上限"""
         pos = self.now_pos()
         if pos[K.Pos.principal] > self.cfg.bas.base_funds * self.cfg.bas.cost_limit:
@@ -565,23 +461,50 @@ class Trader(ABC):
             return True
         return False
 
-    def has_no_amount(self) -> bool:
-        """没有可用持仓"""
+    def adapt_sell_qty(self, plan_qty: int):
+        """调整卖出的数量"""
         pos = self.now_pos()
-        return pos[K.Pos.avail_amount] <= self.remain_amount()
+        base_price = self.tkt.extMap.get(K.Bas.base_price)
+        start_qty = round(self.cfg.bas.start_qty / base_price / 100) * 100
+        least_qty = round(self.cfg.bas.least_qty / base_price / 100) * 100
+        avail_qty = pos[K.Pos.avail_amount]
 
-    def remain_amount(self) -> int:
-        """获取保留的股票数量"""
-        pos = self.now_pos()
-        profit = pos[K.Pos.valuation] - pos[K.Pos.principal]
-        if profit > self.cfg.bas.base_funds * self.cfg.bas.gain_limit:
+        # 计算需要保留的数量
+        profit = pos[K.Pos.valuation] - pos[K.Pos.principal]  # 当前盈利
+        unavail_qty = pos[K.Pos.total_amount] - avail_qty  # 不可用持仓数量
+        profit_target = self.cfg.bas.base_funds * self.cfg.bas.gain_limit  # 盈利目标
+        floor_qty = 0 if unavail_qty == 0 and profit >= profit_target else 100
+
+        # 获取卖出的数量
+        if avail_qty <= floor_qty:
             return 0
-        return 100
+        if avail_qty <= least_qty:
+            return avail_qty if floor_qty == 0 else 0
+        sell_qty = max(start_qty, plan_qty)
+        if avail_qty <= sell_qty + least_qty:
+            return avail_qty - floor_qty
+        return sell_qty
 
-    def log(self, level: int, amount: float):
-        """添加日志"""
+    def log(self, amount: float):
+        """添加操作记录"""
         curr_min = self.now_min()
-        log = Bin.Act(curr_min).info(amount, level)
+        curr_act = Bin.Act(curr_min).order(amount)
+        self.tkt.actSet.append(curr_act)
+
+    def orrr(self, status: int):
+        total_acts = self.tkt.actSet
+        order_acts = [act for act in total_acts if act.status == status]
+        act_quotas = self.cfg.rise.add_quotas if status > 0 else self.cfg.fall.sub_quotas
+        if len(order_acts) == 0:
+            return True
+        # 今日买卖次数已经用完
+        if len(order_acts) >= len(act_quotas):
+            return False
+        # 重复执行
+
+
+
+
 
     def now_pos(self) -> dict:
         return self.tkt.posBus.at(-1)
@@ -592,32 +515,73 @@ class Trader(ABC):
     def now_min(self) -> dict:
         return self.tkt.minBus.at(-1)
 
+    @abstractmethod
+    def is_buy(self) -> bool:
+        pass
+
+    @abstractmethod
+    def do_buy(self, func: Callable):
+        pass
+
+    @abstractmethod
+    def is_sell(self) -> bool:
+        pass
+
+    @abstractmethod
+    def do_sell(self, func: Callable):
+        pass
+
 
 class TurnTrader(Trader):
     def is_buy(self) -> bool:
         now_day = self.now_day()
         now_min = self.now_min()
 
-        # 前5分钟不买入
-        if now_min[K.Bas.datetime].time() < time(9, 35, 0): return False
-        # 超过亏损上限 or 超过本金上限
-        if self.over_budget(): return False
-        # 日线下跌
-        if now_day[K.Smma.fast] <= now_day[K.Smma.slow]: return False
-        # 分钟线下跌
-        if now_min[K.Ema.fast] <= now_min[K.Ema.slow]: return False
-        # MACD线的diff、dea在零轴下
-        if now_min[K.Macd.dif] <= 0 or now_min[K.Macd.dea] <= 0: return False
-        # MACD线的diff在dea下
-        if now_min[K.Macd.dif] <= now_min[K.Macd.dea]: return False
-        # MACD小于设定的下限
-        if now_min[K.Macd.macd] < self.cfg.rise.upper_macd: return False
+        if now_min[K.Bas.datetime].time() < time(9, 35, 0):
+            return False  # 前5分钟
+        if self.is_over_budget():
+            return False  # 超过亏损上限 or 超过本金上限
+        if now_day[K.Smma.fast] <= now_day[K.Smma.slow]:
+            return False  # 日线下跌
+        if now_min[K.Ema.fast] <= now_min[K.Ema.slow]:
+            return False  # 分钟线下跌
+        if now_min[K.Macd.dif] <= 0 or now_min[K.Macd.dea] <= 0:
+            return False  # MACD线的diff、dea在零轴下
+        if now_min[K.Macd.dif] <= now_min[K.Macd.dea]:
+            return False  # MACD线的diff在dea下
+        acts = self.tkt.actSet
+        buy_acts = [act for act in acts if act.status == 1]
+        if len(buy_acts) >= len(self.cfg.rise.add_quotas):
+            return False  # 今日加仓次数已经用完
+        if len(buy_acts) >= 1:
+
+
+        if now_min[K.Macd.macd] >= self.cfg.rise.upper_macd:
+            return True # MACD大于设定的上限
+
+
+
         # 涨幅未达到阈值 or 重复操作
         level = self.__rise_level()
         turn = self.tkt.extMap.get(K.Turn.turns)[-1]
         if level == -1 or turn.add_quotas[level] == 0: return False
         # 决定买入
         return True
+
+    def do_buy(self, func: Callable):
+        """执行买入"""
+        turn = self.tkt.extMap.get(K.Turn.turns)[-1]
+        lots = turn.add_quotas
+        level = self.__rise_level()
+
+        base_price = self.tkt.extMap.get(K.Bas.base_price)
+        buy_amount = max(self.cfg.bas.base_funds * lots[level], self.cfg.bas.foot_funds) / base_price
+        amount = round(buy_amount / 100) * 100
+
+        # 执行买入
+        func(self.tkt.symbol, amount)
+        lots[level] = 0.0
+        self.log(level, amount)
 
     def is_sell(self) -> bool:
         now_min = self.now_min()
@@ -636,21 +600,6 @@ class TurnTrader(Trader):
         if level == -1 or turn.sub_quotas[level] == 0: return False
         # 决定卖出
         return True
-
-    def do_buy(self, func: Callable):
-        """执行买入"""
-        turn = self.tkt.extMap.get(K.Turn.turns)[-1]
-        lots = turn.add_quotas
-        level = self.__rise_level()
-
-        base_price = self.tkt.extMap.get(K.Bas.base_price)
-        buy_amount = max(self.cfg.bas.base_funds * lots[level], self.cfg.bas.foot_funds) / base_price
-        amount = round(buy_amount / 100) * 100
-
-        # 执行买入
-        func(self.tkt.symbol, amount)
-        lots[level] = 0.0
-        self.log(level, amount)
 
     def do_sell(self, func: Callable):
         """执行卖出"""
