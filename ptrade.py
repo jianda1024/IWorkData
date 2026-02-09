@@ -22,24 +22,13 @@ from __future__ import annotations
 
 import copy
 from abc import ABC, abstractmethod
+from collections import deque
 from datetime import time
 from types import SimpleNamespace
 from typing import Callable, Type, Any
 
 
 class K:
-    class Bas:
-        base_price = 'base_price'
-        base_amount = 'base_amount'
-
-    class Pos:
-        avail_amount = 'avail_amount'
-        total_amount = 'total_amount'
-        cost_price = 'cost_price'
-        last_price = 'last_price'
-        valuation = 'valuation'
-        principal = 'principal'
-
     class Bar:
         datetime = 'datetime'
         volume = 'volume'
@@ -50,31 +39,34 @@ class K:
         high = 'high'
         low = 'low'
 
+    class Pos:
+        avail_amount = 'avail_amount'
+        total_amount = 'total_amount'
+        cost_price = 'cost_price'
+        last_price = 'last_price'
+        valuation = 'valuation'
+        principal = 'principal'
+
     class Ext:
-        live_act = 'live_act'
+        not_buy_day = 'not_buy_day'
+        base_amount = 'base_amount'
+        base_price = 'base_price'
         turn_nodes = 'turn_nodes'
         turn_turns = 'turn_turns'
-
-    class Ema:
-        fast = 'ema_fast'
-        slow = 'ema_slow'
-
-    class Smma:
-        fast = 'smma_fast'
-        slow = 'smma_slow'
+        live_act = 'live_act'
 
     class Sma:
-        ma5 = 'MA5'
-        ma10 = 'MA10'
-        ma20 = 'MA20'
-        ma30 = 'MA30'
-        ma60 = 'MA60'
+        sma05 = 'SMA5'
+        sma10 = 'SMA10'
+        sma20 = 'SMA20'
+        sma30 = 'SMA30'
+        sma60 = 'SMA60'
 
     class Macd:
         fast = 'macd_fast'
         slow = 'macd_slow'
         sign = 'macd_sign'
-        diff = 'macd_diff'
+        dif = 'macd_dif'
         dea = 'macd_dea'
         macd = 'macd'
 
@@ -88,7 +80,7 @@ class K:
 
 class Act:
     def __init__(self, symbol: str, bar: dict):
-        self.node_val = bar[K.Ema.fast]
+        self.node_val = bar[K.Sma.sma10]
         self.node_idx = bar[K.Bar.datetime]
         self.turn_idx = bar[K.Turn.turn_idx]
         self.turn_val = bar[K.Turn.turn_val]
@@ -122,7 +114,7 @@ class Pos:
             K.Pos.valuation: self.valuation,
             K.Pos.principal: self.principal,
         }
-        bus.put(self.datetime_str, pos_dict)
+        bus.add(self.datetime_str, pos_dict)
 
 
 class Bar:
@@ -168,7 +160,7 @@ class Bar:
             K.Bar.high: self.high,
             K.Bar.low: self.low,
         }
-        bus.put(self.time_str, bar_dict)
+        bus.add(self.time_str, bar_dict)
 
 
 class Bus:
@@ -179,14 +171,14 @@ class Bus:
     def at(self, idx: int) -> dict:
         return self.data[idx]
 
-    def put(self, key: str, value: dict):
+    def add(self, key: str, value: dict):
         self.keys.append(key)
         self.data.append(value)
 
-    def update(self, idx: int, col: str, val: Any):
+    def set(self, idx: int, col: str, val: Any):
         self.data[idx][col] = val
 
-    def modify(self, row: str, col: str, val: Any):
+    def put(self, row: str, col: str, val: Any):
         idx = self.keys.index(row)
         self.data[idx][col] = val
 
@@ -215,23 +207,13 @@ class Var:
             self.start_qty = 3000  # 起步买卖金额
             self.least_qty = 1000  # 最低卖出金额
 
-    class Ema:
-        def __init__(self):
-            self.fast = 20  # 快线周期
-            self.slow = 30  # 慢线周期
-
     class Sma:
         def __init__(self):
-            self.sma5 = 5
-            self.sma10 = 10
-            self.sma20 = 20
-            self.sma30 = 30
-            self.sma60 = 60
-
-    class Smma:
-        def __init__(self):
-            self.fast = 10  # 快线周期
-            self.slow = 30  # 慢线周期
+            self.p05 = 5
+            self.p10 = 10
+            self.p20 = 20
+            self.p30 = 30
+            self.p60 = 60
 
     class Macd:
         def __init__(self):
@@ -242,6 +224,7 @@ class Var:
     class Turn:
         def __init__(self):
             self.least_wave = 0.004  # 最小摆动（比例）
+            self.value_key = K.Sma.sma10
 
     class Rise:
         def __init__(self):
@@ -258,8 +241,7 @@ class Var:
     class Config:
         def __init__(self):
             self.bas: Var.Bas = Var.Bas()
-            self.ema: Var.Ema = Var.Ema()
-            self.smma: Var.Smma = Var.Smma()
+            self.sma: Var.Sma = Var.Sma()
             self.macd: Var.Macd = Var.Macd()
             self.turn: Var.Turn = Var.Turn()
             self.rise: Var.Rise = Var.Rise()
@@ -269,7 +251,7 @@ class Var:
 class Biz:
     class Base:
         def __init__(self, cfg: Var.Config, tkt: Ticket):
-            self.way = 'PTrder'
+            self.way = 'PTrader'
             self.cfg = cfg
             self.tkt = tkt
 
@@ -285,7 +267,7 @@ class Biz:
         def fit_sell_qty(self, plan_qty: int):
             """适配卖出的数量"""
             pos = self.live_pos()
-            base_price = self.tkt.extMap.get(K.Bas.base_price)
+            base_price = self.tkt.extMap.get(K.Ext.base_price)
             start_qty = round(self.cfg.bas.start_qty / base_price / 100) * 100
             least_qty = round(self.cfg.bas.least_qty / base_price / 100) * 100
             avail_qty = pos[K.Pos.avail_amount]
@@ -328,7 +310,7 @@ class Biz:
             return self.__check_trade_quota(-1, sub_quotas, thresholds)
 
         def __check_trade_quota(self, status, quotas, thresholds):
-            base_price = self.tkt.extMap.get(K.Bas.base_price)
+            base_price = self.tkt.extMap.get(K.Ext.base_price)
             acts = [act for act in self.tkt.actSet if act.status == status]
 
             # 配额已经用完
@@ -355,7 +337,6 @@ class Biz:
             return True, quotas[length]
 
     class Trader(ABC, Base):
-
         @abstractmethod
         def is_buy(self) -> bool:
             pass
@@ -408,31 +389,24 @@ class Biz:
     class TurnTrader(Trader):
         def is_buy(self) -> bool:
             """判断是否买入"""
-            live_day = self.live_day()
             live_min = self.live_min()
-            if live_min[K.Bar.datetime].time() < time(9, 40, 0):
-                return False  # 前5分钟
-            if self.is_over_budget():
-                return False  # 超过亏损上限 or 超过本金上限
-            if live_day[K.Smma.fast] <= live_day[K.Smma.slow]:
-                return False  # 日线下跌
-            if live_min[K.Ema.fast] <= live_min[K.Ema.slow]:
-                return False  # 分钟线下跌
-            #if live_min[K.Macd.diff] <= 0 or live_min[K.Macd.dea] <= 0:
-                #return False  # MACD线的diff、dea在零轴下
-            if live_min[K.Macd.diff] <= live_min[K.Macd.dea]:
-                return False  # MACD线的diff在dea下
-            if live_min[K.Macd.macd] >= self.cfg.rise.upper_macd:
-                return True  # MACD大于设定的上限
+            if self.is_over_budget():  return False
+            if self.tkt.extMap.get(K.Ext.not_buy_day, True): return False
+            if live_min[K.Bar.datetime].time() < time(9, 40, 0): return False
+
+            # MACD大于设定的上限时，直接买入
+            if live_min[K.Macd.macd] >= self.cfg.rise.upper_macd: return True
+            # 分钟线
+            if live_min[K.Sma.sma10] <= max(live_min[K.Sma.sma20], live_min[K.Sma.sma30]): return False
+            if live_min[K.Macd.macd] < 0: return False
             # 决定买入
             return True
 
         def buy_amount(self) -> float:
             """买入数量"""
             has_quota, quota = self.check_buy_quota()
-            if not has_quota:
-                return 0
-            base_price = self.tkt.extMap.get(K.Bas.base_price)
+            if not has_quota: return 0
+            base_price = self.tkt.extMap.get(K.Ext.base_price)
             buy_amount = max(self.cfg.bas.base_funds * quota, self.cfg.bas.start_qty) / base_price
             return round(buy_amount / 100) * 100
 
@@ -440,118 +414,116 @@ class Biz:
             """判断是否卖出"""
             live_min = self.live_min()
             if live_min[K.Bar.datetime].time() < time(9, 40, 0):
-                return False  # 前5分钟
-            if live_min[K.Ema.fast] >= live_min[K.Ema.slow]:
-                return False  # 分钟线上涨
-            if live_min[K.Macd.macd] > 0.001:
-                return False  # MACD上涨
-            if live_min[K.Macd.macd] < self.cfg.fall.lower_macd:
-                return True  # MACD小于设定的下限，则卖出
+                return False
+
+            # MACD小于设定的下限，直接卖出
+            if live_min[K.Macd.macd] < self.cfg.fall.lower_macd: return True
+            # 分钟线
+            if live_min[K.Sma.sma10] >= live_min[K.Sma.sma20]: return False
+            if live_min[K.Macd.macd] > 0: return False
             # 决定卖出
             return True
 
         def sell_amount(self) -> float:
             """卖出数量"""
             has_quota, quota = self.check_sell_quota()
-            if not has_quota:
-                return 0
+            if not has_quota: return 0
             plan_amount = self.cfg.bas.base_funds * quota
             sell_amount = self.fit_sell_qty(plan_amount)
             return -sell_amount
 
 
 class Line:
-    class L(ABC):
+    class Sma:
         def __init__(self, cfg: Var.Config):
             self.cfg: Var.Config = cfg
 
-        @abstractmethod
-        def _calc(self, price: float, period: int, prev_val: float):
-            pass
+        def first(self, bus: Bus, ext: dict):
+            Line.Sma.__first(bus, ext, K.Sma.sma05, self.cfg.sma.p05)
+            Line.Sma.__first(bus, ext, K.Sma.sma10, self.cfg.sma.p10)
+            Line.Sma.__first(bus, ext, K.Sma.sma20, self.cfg.sma.p20)
+            Line.Sma.__first(bus, ext, K.Sma.sma30, self.cfg.sma.p30)
+            Line.Sma.__first(bus, ext, K.Sma.sma60, self.cfg.sma.p60)
+            return self
+
+        def next(self, bus: Bus, ext: dict):
+            Line.Sma.__next(bus, ext, K.Sma.sma05)
+            Line.Sma.__next(bus, ext, K.Sma.sma10)
+            Line.Sma.__next(bus, ext, K.Sma.sma20)
+            Line.Sma.__next(bus, ext, K.Sma.sma30)
+            Line.Sma.__next(bus, ext, K.Sma.sma60)
+            return self
 
         @staticmethod
-        def _first(bus: Bus, key: str):
+        def __first(bus: Bus, ext: dict, key: str, period: int):
             price = bus.at(-1).get(K.Bar.close)
-            bus.update(-1, key, price)
+            mas = ext.setdefault(key, deque(maxlen=period))
+            mas.append(price)
+            bus.set(-1, key, price)
 
-        def _next(self, bus: Bus, key: str, period: int):
+        @staticmethod
+        def __next(bus: Bus, ext: dict, key: str):
+            price = bus.at(-1).get(K.Bar.close)
+            mas = ext.get(key)
+            mas.append(price)
+            ma = round(sum(mas) / len(mas), 4)
+            bus.set(-1, key, ma)
+
+    class Macd:
+        def __init__(self, cfg: Var.Config):
+            self.cfg: Var.Config = cfg
+
+        def first(self, bus: Bus):
+            price = bus.at(-1).get(K.Bar.close)
+            bus.set(-1, K.Macd.fast, price)
+            bus.set(-1, K.Macd.slow, price)
+            bus.set(-1, K.Macd.dif, 0)
+            bus.set(-1, K.Macd.dea, 0)
+            bus.set(-1, K.Macd.macd, 0)
+            return self
+
+        def next(self, bus: Bus):
+            self.__next(bus, K.Macd.fast, self.cfg.macd.fast)
+            self.__next(bus, K.Macd.slow, self.cfg.macd.slow)
+            self.__next_macd(bus, self.cfg.macd.sign)
+
+        @staticmethod
+        def __next(bus: Bus, key: str, period: int):
             price = bus.at(-1).get(K.Bar.close)
             prev_val = bus.at(-2).get(key)
-            next_val = self._calc(price, period, prev_val)
-            bus.update(-1, key, next_val)
+            next_val = Line.Macd.__calc(price, period, prev_val)
+            bus.set(-1, key, next_val)
 
-    class Ema(L):
-        def first(self, bus: Bus):
-            self._first(bus, K.Ema.fast)
-            self._first(bus, K.Ema.slow)
-            return self
-
-        def next(self, bus: Bus):
-            self._next(bus, K.Ema.fast, self.cfg.ema.fast)
-            self._next(bus, K.Ema.slow, self.cfg.ema.slow)
-
-        def _calc(self, price: float, period: int, prev_val: float):
-            alpha = 2 / (period + 1)
-            value = alpha * price + (1 - alpha) * prev_val
-            return round(value, 4)
-
-    class Smma(L):
-        def first(self, bus: Bus):
-            self._first(bus, K.Smma.fast)
-            self._first(bus, K.Smma.slow)
-            return self
-
-        def next(self, bus: Bus):
-            self._next(bus, K.Smma.fast, self.cfg.smma.fast)
-            self._next(bus, K.Smma.slow, self.cfg.smma.slow)
-
-        def _calc(self, price: float, period: int, prev_val: float):
-            value = (prev_val * (period - 1) + price) / period
-            return round(value, 4)
-
-    class Macd(L):
-        def first(self, bus: Bus):
-            self._first(bus, K.Macd.fast)
-            self._first(bus, K.Macd.slow)
-            bus.update(-1, K.Macd.diff, 0)
-            bus.update(-1, K.Macd.dea, 0)
-            bus.update(-1, K.Macd.macd, 0)
-            return self
-
-        def next(self, bus: Bus):
-            self._next(bus, K.Macd.fast, self.cfg.macd.fast)
-            self._next(bus, K.Macd.slow, self.cfg.macd.slow)
-            self._next_macd(bus)
-
-        def _next_macd(self, bus: Bus):
-            period = self.cfg.macd.sign
+        @staticmethod
+        def __next_macd(bus: Bus, period: int):
             fast_ema = bus.at(-1).get(K.Macd.fast)
             slow_ema = bus.at(-1).get(K.Macd.slow)
             prev_dea = bus.at(-2).get(K.Macd.dea)
 
             dif = round(fast_ema - slow_ema, 4)
-            dea = self._calc(dif, period, prev_dea)
+            dea = Line.Macd.__calc(dif, period, prev_dea)
             macd = round((dif - dea) * 2, 4)
 
-            bus.update(-1, K.Macd.diff, dif)
-            bus.update(-1, K.Macd.dea, dea)
-            bus.update(-1, K.Macd.macd, macd)
+            bus.set(-1, K.Macd.dif, dif)
+            bus.set(-1, K.Macd.dea, dea)
+            bus.set(-1, K.Macd.macd, macd)
 
-        def _calc(self, price: float, period: int, prev_val: float):
+        @staticmethod
+        def __calc(price: float, period: int, prev_val: float):
             alpha = 2 / (period + 1)
             value = alpha * price + (1 - alpha) * prev_val
             return round(value, 4)
 
-    class Turn(L):
+    class Turn:
         def __init__(self, cfg: Var.Config):
-            super().__init__(cfg)
+            self.cfg: Var.Config = cfg
             self.threshold = 10000
+            self.value_key = cfg.turn.value_key
 
-        @staticmethod
-        def new_node(bus: Bus) -> Bar.Node:
+        def new_node(self, bus: Bus) -> Bar.Node:
             node = Bar.Node()
             node.node_idx = bus.key(-1)
-            node.node_val = bus.at(-1).get(K.Ema.fast)
+            node.node_val = bus.at(-1).get(self.value_key)
             return node
 
         def new_turn(self, node: Bar.Node) -> Bar.Turn:
@@ -571,7 +543,7 @@ class Line:
             ext[K.Ext.turn_turns] = [turn]
 
             # 最小振幅价格差
-            base_price = ext.get(K.Bas.base_price)
+            base_price = ext.get(K.Ext.base_price)
             self.threshold = round(base_price * self.cfg.turn.least_wave, 4)
 
             bar = bus.at(-1)
@@ -586,7 +558,7 @@ class Line:
             # 先预设值
             bar = bus.at(-1)
             bar[K.Turn.node_idx] = bus.key(-1)
-            bar[K.Turn.node_val] = bar.get(K.Ema.fast)
+            bar[K.Turn.node_val] = bar.get(self.value_key)
             bar[K.Turn.turn_idx] = bus.at(-2).get(K.Turn.turn_idx)
             bar[K.Turn.turn_val] = bus.at(-2).get(K.Turn.turn_val)
             bar[K.Turn.turn_lvl] = 0
@@ -627,16 +599,16 @@ class Line:
                 diff = round(first_turn.turn_val - nodes[-1].node_val, 4)
                 if abs(diff) > self.threshold:
                     first_turn.turn_lvl = 1 if diff > 0 else -1
-                    bus.update(0, K.Turn.turn_lvl, first_turn.turn_lvl)
+                    bus.set(0, K.Turn.turn_lvl, first_turn.turn_lvl)
                 return
 
             # 计算拐点
             turn = self._get_turn(nodes[-1], turns[-1])
             if turn is not None:
                 turns.append(turn)
-                bus.modify(turn.turn_idx, K.Turn.turn_lvl, turn.turn_lvl)
-                bus.update(-1, K.Turn.turn_idx, turn.turn_idx)
-                bus.update(-1, K.Turn.turn_val, turn.turn_val)
+                bus.put(turn.turn_idx, K.Turn.turn_lvl, turn.turn_lvl)
+                bus.set(-1, K.Turn.turn_idx, turn.turn_idx)
+                bus.set(-1, K.Turn.turn_val, turn.turn_val)
 
         def _max_apex(self, apex: Bar.Node, turn: Bar.Turn):
             # 到下一拐点前：最大的凸点
@@ -686,8 +658,9 @@ class Market:
         self.biz: Biz.Trader = trader(self.cfg, self.tkt)
         self.status = 0  # 状态：0-Initial、1-Started、2-Running
 
-        self.line_ema = None
-        self.line_smma = None
+        self.line_day_sma = None
+        self.line_day_macd = None
+        self.line_sma = None
         self.line_macd = None
         self.line_turn = None
 
@@ -695,13 +668,17 @@ class Market:
         self.tkt.clear()
         # 日线数据
         Bar(bars[0]).into(self.tkt.dayBus)
-        self.line_smma = Line.Smma(self.cfg).first(self.tkt.dayBus)
+        self.line_day_sma = Line.Sma(self.cfg).first(self.tkt.dayBus, self.tkt.extMap)
+        self.line_day_macd = Line.Macd(self.cfg).first(self.tkt.dayBus)
+
         for bar in bars[1:]:
             Bar(bar).into(self.tkt.dayBus)
-            self.line_smma.next(self.tkt.dayBus)
+            self.line_day_sma.next(self.tkt.dayBus, self.tkt.extMap)
+            self.line_day_macd.next(self.tkt.dayBus)
 
-        # 基准价格
-        self.tkt.extMap[K.Bas.base_price] = round(bars[-1].close, 4)
+        # 今日是否买入、基准价格
+        self.tkt.extMap[K.Ext.not_buy_day] = self.__not_buy_day()
+        self.tkt.extMap[K.Ext.base_price] = round(bars[-1].close, 4)
         self.status = 1
         return self
 
@@ -709,9 +686,9 @@ class Market:
         if self.status == 2:
             Pos(pos, bar).into(self.tkt.posBus)
             Bar(bar).into(self.tkt.minBus)
-            self.line_ema.next(self.tkt.minBus)
-            self.line_macd.next(self.tkt.minBus)
+            self.line_sma.next(self.tkt.minBus, self.tkt.extMap)
             self.line_turn.next(self.tkt.minBus, self.tkt.extMap)
+            self.line_macd.next(self.tkt.minBus)
             return
 
         if self.status == 0:
@@ -722,16 +699,24 @@ class Market:
             # 仓位数据、基准持仓
             position = Pos(pos, bar)
             position.into(self.tkt.posBus)
-            self.tkt.extMap[K.Bas.base_amount] = position.avail_amount
+            self.tkt.extMap[K.Ext.base_amount] = position.avail_amount
             # 分钟数据
             Bar(bar).into(self.tkt.minBus)
-            self.line_ema = Line.Ema(self.cfg).first(self.tkt.minBus)
-            self.line_macd = Line.Macd(self.cfg).first(self.tkt.minBus)
+            self.line_sma = Line.Sma(self.cfg).first(self.tkt.minBus, self.tkt.extMap)
             self.line_turn = Line.Turn(self.cfg).first(self.tkt.minBus, self.tkt.extMap)
+            self.line_macd = Line.Macd(self.cfg).first(self.tkt.minBus)
             self.status = 2
 
     def trading(self, buy: Callable, sell: Callable):
         self.biz.trading(buy, sell)
+
+    def __not_buy_day(self) -> bool:
+        live_day = self.tkt.dayBus.at(-1)
+        max_sma = max(live_day[K.Sma.sma10], live_day[K.Sma.sma20], live_day[K.Sma.sma30], live_day[K.Sma.sma60])
+        if live_day[K.Sma.sma05] <= max_sma: return True
+        if live_day[K.Macd.dif] < 0: return True
+        if live_day[K.Macd.dea] < 0: return True
+        return False
 
 
 class Manager:
