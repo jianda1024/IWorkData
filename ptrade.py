@@ -772,7 +772,7 @@ def before_trading_start(context, data):
     g.symbols = symbols
     set_universe(symbols)
 
-    history = get_history(60, frequency='1d')
+    history = get_history(120, frequency='1d')
     for symbol in symbols:
         df = history.query(f'code in ["{symbol}"]')
         bars = [SimpleNamespace(datetime=idx, **row.to_dict()) for idx, row in df.iterrows()]
