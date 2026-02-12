@@ -47,8 +47,8 @@ class K:
         valuation = 'valuation'
         principal = 'principal'
 
-    class Ext:
-        not_buy_day = 'not_buy_day'
+    class Ctx:
+        stop_buying = 'stop_buying'
         base_amount = 'base_amount'
         base_price = 'base_price'
         turn_nodes = 'turn_nodes'
@@ -269,7 +269,7 @@ class Biz:
         def fit_sell_qty(self, plan_qty: int):
             """适配卖出的数量"""
             pos = self.live_pos()
-            base_price = self.bus.extMap.get(K.Ext.base_price)
+            base_price = self.bus.ctxMap.get(K.Ctx.base_price)
             start_qty = round(self.cfg.bas.start_qty / base_price / 100) * 100
             least_qty = round(self.cfg.bas.least_qty / base_price / 100) * 100
             avail_qty = pos[K.Pos.avail_amount]
@@ -322,7 +322,7 @@ class Biz:
             live_min = self.live_min()
             turn_idx = live_min[K.Turn.turn_idx]  # 拐点
             node_val = live_min[K.Turn.node_val]  # 节点值
-            base_price = self.bus.extMap.get(K.Ext.base_price)  # 基准价格
+            base_price = self.bus.ctxMap.get(K.Ctx.base_price)  # 基准价格
             threshold_val = thresholds[length] * base_price  # 阈值
 
             # 首次交易，或者前后两次交易的拐点不一样
@@ -384,14 +384,14 @@ class Biz:
             live_min = self.live_min()
             live_act = Act(symbol, live_min).trade(amount)
             self.bus.actSet.append(live_act)
-            self.bus.extMap[K.Ext.live_act] = live_act
+            self.bus.ctxMap[K.Ctx.live_act] = live_act
 
     class TurnTrader(Trader):
         def is_buy(self) -> bool:
             """判断是否买入"""
             live_min = self.live_min()
             if self.is_over_budget():  return False
-            if self.bus.extMap.get(K.Ext.not_buy_day, True): return False
+            if self.bus.ctxMap.get(K.Ctx.stop_buying, True): return False
             if live_min[K.Bar.instant] < self.cfg.bas.begin_time: return False
 
             # MACD大于设定的上限时，直接买入
@@ -408,7 +408,7 @@ class Biz:
             """买入数量"""
             has_quota, quota = self.check_buy_quota()
             if not has_quota: return 0
-            base_price = self.bus.extMap.get(K.Ext.base_price)
+            base_price = self.bus.ctxMap.get(K.Ctx.base_price)
             buy_amount = max(self.cfg.bas.base_funds * quota, self.cfg.bas.start_qty) / base_price
             return round(buy_amount / 100) * 100
 
@@ -542,11 +542,11 @@ class Line:
             node = self.new_node(lot)
             turn = self.new_turn(node)
             turn.turn_lvl = -2
-            ext[K.Ext.turn_nodes] = [node]
-            ext[K.Ext.turn_turns] = [turn]
+            ext[K.Ctx.turn_nodes] = [node]
+            ext[K.Ctx.turn_turns] = [turn]
 
             # 最小振幅价格差
-            base_price = ext.get(K.Ext.base_price)
+            base_price = ext.get(K.Ctx.base_price)
             self.threshold = round(base_price * self.cfg.turn.least_wave, 4)
 
             bar = lot.at(-1)
@@ -567,7 +567,7 @@ class Line:
             bar[K.Turn.turn_lvl] = 0
 
             # 跳过连续相等的节点
-            nodes = ext.get(K.Ext.turn_nodes)
+            nodes = ext.get(K.Ctx.turn_nodes)
             node = self.new_node(lot)
             if node.node_val == nodes[-1].node_val:
                 return
@@ -578,7 +578,7 @@ class Line:
                 return
 
             # 计算顶点、拐点
-            turns = ext.get(K.Ext.turn_turns)
+            turns = ext.get(K.Ctx.turn_turns)
             self._calc_apex(nodes, turns)
             self._calc_turn(nodes, turns, lot)
 
@@ -643,15 +643,15 @@ class Bus:
         self.posLot = Lot()  # 仓位数据
         self.dayLot = Lot()  # 日线数据
         self.minLot = Lot()  # 分钟数据
+        self.ctxMap = {}  # 上下文数据
         self.actSet = []  # 操作数据
-        self.extMap = {}  # 扩展信息
 
     def clear(self):
         self.posLot.clear()
         self.dayLot.clear()
         self.minLot.clear()
+        self.ctxMap.clear()
         self.actSet.clear()
-        self.extMap.clear()
 
 
 class Market:
@@ -659,7 +659,7 @@ class Market:
         self.bus: Bus = bus
         self.cfg: Var.Config = config()
         self.biz: Biz.Trader = trader(self.cfg, self.bus)
-        self.status = 0  # 状态：0-Initial、1-Started、2-Running
+        self.status = 0  # 状态：-1暂停、0初始、1就绪、2执行中
 
         self.line_day_sma = None
         self.line_day_macd = None
@@ -667,21 +667,27 @@ class Market:
         self.line_macd = None
         self.line_turn = None
 
-    def prepare(self, bars):
+    def prepare(self, pos, bars):
         self.bus.clear()
         # 日线数据
         Bar(bars[0]).into(self.bus.dayLot)
-        self.line_day_sma = Line.Sma(self.cfg).first(self.bus.dayLot, self.bus.extMap)
+        self.line_day_sma = Line.Sma(self.cfg).first(self.bus.dayLot, self.bus.ctxMap)
         self.line_day_macd = Line.Macd(self.cfg).first(self.bus.dayLot)
-
         for bar in bars[1:]:
             Bar(bar).into(self.bus.dayLot)
-            self.line_day_sma.next(self.bus.dayLot, self.bus.extMap)
+            self.line_day_sma.next(self.bus.dayLot, self.bus.ctxMap)
             self.line_day_macd.next(self.bus.dayLot)
 
-        # 今日是否买入、基准价格
-        self.bus.extMap[K.Ext.not_buy_day] = self.__not_buy_day()
-        self.bus.extMap[K.Ext.base_price] = round(bars[-1].close, 4)
+        # 今日是否允许买卖
+        stop_buying = self.__stop_buying()
+        self.bus.ctxMap[K.Ctx.stop_buying] = stop_buying
+        amount = getattr(pos, 'amount', 0.0)  # 总持仓数量
+        if stop_buying and amount <= 100:
+            self.status = -1
+            return self
+
+        # 今日基准价格
+        self.bus.ctxMap[K.Ctx.base_price] = round(bars[-1].close, 4)
         self.status = 1
         return self
 
@@ -689,31 +695,34 @@ class Market:
         if self.status == 2:
             Pos(pos, bar).into(self.bus.posLot)
             Bar(bar).into(self.bus.minLot)
-            self.line_sma.next(self.bus.minLot, self.bus.extMap)
-            self.line_turn.next(self.bus.minLot, self.bus.extMap)
+            self.line_sma.next(self.bus.minLot, self.bus.ctxMap)
+            self.line_turn.next(self.bus.minLot, self.bus.ctxMap)
             self.line_macd.next(self.bus.minLot)
             return
 
+        if self.status == -1:
+            return
+
         if self.status == 0:
-            self.prepare([bar])
+            self.prepare(pos,[bar])
             return
 
         if self.status == 1:
             # 仓位数据、基准持仓
             position = Pos(pos, bar)
             position.into(self.bus.posLot)
-            self.bus.extMap[K.Ext.base_amount] = position.avail_amount
+            self.bus.ctxMap[K.Ctx.base_amount] = position.avail_amount
             # 分钟数据
             Bar(bar).into(self.bus.minLot)
-            self.line_sma = Line.Sma(self.cfg).first(self.bus.minLot, self.bus.extMap)
-            self.line_turn = Line.Turn(self.cfg).first(self.bus.minLot, self.bus.extMap)
+            self.line_sma = Line.Sma(self.cfg).first(self.bus.minLot, self.bus.ctxMap)
+            self.line_turn = Line.Turn(self.cfg).first(self.bus.minLot, self.bus.ctxMap)
             self.line_macd = Line.Macd(self.cfg).first(self.bus.minLot)
             self.status = 2
 
     def trading(self, buy: Callable, sell: Callable):
         self.biz.trading(buy, sell)
 
-    def __not_buy_day(self) -> bool:
+    def __stop_buying(self) -> bool:
         live_day = self.bus.dayLot.at(-1)
         max_sma = max(live_day[K.Sma.sma10], live_day[K.Sma.sma20], live_day[K.Sma.sma30], live_day[K.Sma.sma60])
         if live_day[K.Sma.sma05] <= max_sma: return True
@@ -777,9 +786,10 @@ def before_trading_start(context, data):
 
     history = get_history(120, frequency='1d')
     for symbol in symbols:
+        pos = positions.get(symbol)
         df = history.query(f'code in ["{symbol}"]')
         bars = [SimpleNamespace(datetime=idx, **row.to_dict()) for idx, row in df.iterrows()]
-        Manager.market(symbol).prepare(bars)
+        Manager.market(symbol).prepare(pos,bars)
 
 
 def handle_data(context, data):
