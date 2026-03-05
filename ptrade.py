@@ -31,24 +31,7 @@ class K:
     base_price = 'base_price'
     sup_quotas = 'sup_quotas'
     sub_quotas = 'sub_quotas'
-    last_act = 'last_act'
-
-
-class Act:
-    def __init__(self, symbol: str, node: Bin.Node):
-        self.node_idx = node.index
-        self.node_val = node.turn.val
-        self.turn_idx = node.turn.prvTurn.idx
-        self.turn_val = node.turn.prvTurn.val
-        self.turn_lvl = node.turn.prvTurn.lvl
-        self.symbol = symbol
-        self.amount = 0
-        self.status = 0
-
-    def trade(self, amount: float):
-        self.status = 1 if amount > 0 else -1 if amount < 0 else 0
-        self.amount = amount
-        return self
+    last_log = 'last_log'
 
 
 class Bar:
@@ -57,11 +40,11 @@ class Bar:
         self.instant = bar.datetime.strftime('%H:%M:%S')
         self.volume: float = round(bar.volume, 2)  # 交易量
         self.money: float = round(bar.money, 2)  # 交易金额
-        self.price: float = round(bar.price, 4)  # 最新价
-        self.close: float = round(bar.close, 4)  # 收盘价
-        self.open: float = round(bar.open, 4)  # 开盘价
-        self.high: float = round(bar.high, 4)  # 最高价
-        self.low: float = round(bar.low, 4)  # 最低价
+        self.price: float = round(bar.price, 5)  # 最新价
+        self.close: float = round(bar.close, 5)  # 收盘价
+        self.open: float = round(bar.open, 5)  # 开盘价
+        self.high: float = round(bar.high, 5)  # 最高价
+        self.low: float = round(bar.low, 5)  # 最低价
 
 
 class Pos:
@@ -72,6 +55,23 @@ class Pos:
         self.cost_price = getattr(pos, 'cost_basis', 0.0)  # 成本价格
         self.valuation = round(self.total_amount * self.last_price, 2)  # 市值
         self.principal = round(self.total_amount * self.cost_price, 2)  # 本金
+
+
+class Log:
+    def __init__(self, symbol: str, node: Bin.Node):
+        self.node_idx = node.index
+        self.node_val = node.turn.val
+        self.turn_idx = node.turn.prvTurn.idx
+        self.turn_val = node.turn.prvTurn.val
+        self.turn_lvl = node.turn.prvTurn.lvl
+        self.symbol = symbol
+        self.amount = 0
+        self.status = 0
+
+    def act(self, amount: float):
+        self.status = 1 if amount > 0 else -1 if amount < 0 else 0
+        self.amount = amount
+        return self
 
 
 class Agg:
@@ -120,11 +120,6 @@ class Silo:
     def pop(self) -> Bin.Node:
         self.keys.pop()
         return self.data.pop()
-
-    def clear(self):
-        self.keys.clear()
-        self.data.clear()
-        self.dict.clear()
 
     def __len__(self):
         return len(self.data)
@@ -232,7 +227,7 @@ class Biz:
             self.bus = bus
 
         def last_pos(self) -> Pos:
-            return self.bus.posArr[-1]
+            return self.bus.posSet[-1]
 
         def last_min(self) -> Bin.Node:
             return self.bus.minSet.at(-1)
@@ -267,9 +262,9 @@ class Biz:
             turn_idx = last_min.turn.prev_idx
 
             # 交易记录：类型相同、拐点相同
-            acts = [act for act in self.bus.actArr if act.status == status and act.turn_idx == turn_idx]
-            if len(acts) < len(bounds):
-                threshold = bounds[len(acts)] * self.bus.ctxMap.get(K.base_price)
+            logs = [log for log in self.bus.logSet if log.status == status and log.turn_idx == turn_idx]
+            if len(logs) < len(bounds):
+                threshold = bounds[len(logs)] * self.bus.ctxMap.get(K.base_price)
                 if (last_min.turn.val - last_min.turn.prvTurn.val) * status > threshold:
                     return True
             return False
@@ -380,51 +375,43 @@ class Biz:
 
         def log(self, symbol: str, amount: float):
             last_min = self.last_min()
-            last_act = Act(symbol, last_min).trade(amount)
-            self.bus.actArr.append(last_act)
-            self.bus.ctxMap[K.last_act] = last_act
+            last_log = Log(symbol, last_min).act(amount)
+            self.bus.logSet.append(last_log)
+            self.bus.ctxMap[K.last_log] = last_log
 
 
 class Line:
     class Sma:
         @staticmethod
         def first(silo: Silo):
-            Line.Sma.__first(silo, 5)
-            Line.Sma.__first(silo, 10)
-            Line.Sma.__first(silo, 20)
-            Line.Sma.__first(silo, 30)
-            Line.Sma.__first(silo, 60)
+            node = silo.at(-1)
+            price = node.bar.close
+            node.sma.sma05 = price
+            node.sma.sma10 = price
+            node.sma.sma20 = price
+            node.sma.sma30 = price
+            node.sma.sma60 = price
 
         @staticmethod
-        def next(silo: Silo, is_temp: bool = False):
-            Line.Sma.__next(silo, 5, is_temp)
-            Line.Sma.__next(silo, 10, is_temp)
-            Line.Sma.__next(silo, 20, is_temp)
-            Line.Sma.__next(silo, 30, is_temp)
-            Line.Sma.__next(silo, 60, is_temp)
+        def next(silo: Silo):
+            Line.Sma.__next(silo, 5)
+            Line.Sma.__next(silo, 10)
+            Line.Sma.__next(silo, 20)
+            Line.Sma.__next(silo, 30)
+            Line.Sma.__next(silo, 60)
             pass
 
         @staticmethod
-        def __first(silo: Silo, period: int):
-            key = 'SMA' + str(period)
-            dqe = deque(maxlen=period)
+        def __next(silo: Silo, period: int):
             node = silo.at(-1)
             price = node.bar.close
-            dqe.append(price)
-            node.sma.set(period, price)
-            silo.dict.setdefault(key, dqe)
-
-        @staticmethod
-        def __next(silo: Silo, period: int, is_temp: bool):
-            key = 'SMA' + str(period)
-            dqe = silo.dict.get(key)
-            node = silo.at(-1)
-            price = node.bar.close
-            dqe.append(price)
-            value = round(sum(dqe) / len(dqe), 4)
-            node.sma.set(period, value)
-            if is_temp:
-                dqe.pop()
+            pre_sma = silo.at(-2).sma.get(period)
+            if len(silo) > period:
+                val_1st = silo.at(-period - 1).bar.close
+                cur_sma = pre_sma + (price - val_1st) / period
+            else:
+                cur_sma = (pre_sma * (len(silo) - 1) + price) / len(silo)
+            node.sma.set(period, round(cur_sma, 5))
 
     class Macd:
         @staticmethod
@@ -445,9 +432,9 @@ class Line:
 
             fast = Line.Macd.ema(price, cfg.macd.fast, prev_node.macd.fast)
             slow = Line.Macd.ema(price, cfg.macd.slow, prev_node.macd.slow)
-            diff = round(fast - slow, 4)
+            diff = round(fast - slow, 5)
             dea_ = Line.Macd.ema(diff, cfg.macd.sign, prev_node.macd.dea_)
-            macd = round((diff - dea_) * 2, 4)
+            macd = round((diff - dea_) * 2, 5)
 
             node.macd.fast = fast
             node.macd.slow = slow
@@ -459,7 +446,7 @@ class Line:
         def ema(price: float, period: int, prev_val: float):
             alpha = 2 / (period + 1)
             value = alpha * price + (1 - alpha) * prev_val
-            return round(value, 4)
+            return round(value, 5)
 
     class Turn:
         @staticmethod
@@ -501,7 +488,7 @@ class Line:
                 return
 
             # 价格最小振幅阈值
-            threshold = round(node.turn.val * cfg.turn.least_wave, 4)
+            threshold = round(node.turn.val * cfg.turn.least_wave, 5)
 
             # 计算顶点、拐点
             Line.Turn.__apex(silo, threshold)
@@ -564,19 +551,12 @@ class Kit:
 class Bus:
     def __init__(self, symbol: str):
         self.symbol = symbol  # 股票代码
-        self.daySet = Silo(180)  # 日线数据
-        self.minSet = Silo(960)  # 分线数据
+        self.daySet = Silo(maxlen=180)  # 日线数据
+        self.minSet = Silo(maxlen=960)  # 分线数据
+        self.posSet = deque(maxlen=480)  # 仓位数据
+        self.logSet = deque(maxlen=480)  # 操作数据
         self.tmpDay = None  # 临时日线节点
-        self.posArr = []  # 仓位数据
-        self.actArr = []  # 操作数据
         self.ctxMap = {}  # 上下文数据
-
-    def clear(self):
-        self.daySet.clear()
-        self.minSet.clear()
-        self.posArr.clear()
-        self.actArr.clear()
-        self.ctxMap.clear()
 
 
 class Mkt:
@@ -587,7 +567,6 @@ class Mkt:
         self.status = 0
 
     def initialize(self, days, mins):
-        self.bus.clear()
         self.__handle_bars(self.bus.daySet, days)
         self.__handle_bars(self.bus.minSet, mins, turn=True)
         self.status = 1
@@ -607,7 +586,7 @@ class Mkt:
             return
 
         # 实时数据
-        self.bus.posArr.append(Pos(pos))
+        self.bus.posSet.append(Pos(pos))
         self.bus.minSet.add(Bin.Node(bar))
         Line.Sma.next(self.bus.minSet)
         Line.Macd.next(self.bus.minSet, self.cfg)
@@ -617,7 +596,7 @@ class Mkt:
         node = Bin.Node(bar)
         is_temp = node.bar.instant < '15:00:00'
         self.bus.daySet.add(node)
-        Line.Sma.next(self.bus.daySet, is_temp)
+        Line.Sma.next(self.bus.daySet)
         Line.Macd.next(self.bus.daySet, self.cfg)
         if is_temp:
             self.bus.tmpDay = self.bus.daySet.pop()
