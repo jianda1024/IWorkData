@@ -20,17 +20,16 @@ DISCLAIMER:
 """
 from __future__ import annotations
 
-import copy
 from collections import deque
 from types import SimpleNamespace
 from typing import Callable, Type
 
 
 class K:
-    base_amount = 'base_amount'
     base_price = 'base_price'
-    sup_quotas = 'sup_quotas'
-    sub_quotas = 'sub_quotas'
+    base_amount = 'base_amount'
+    rise_quotas = 'rise_quotas'
+    fall_quotas = 'fall_quotas'
     last_log = 'last_log'
 
 
@@ -46,6 +45,15 @@ class Bar:
         self.high: float = round(bar.high, 5)  # 最高价
         self.low: float = round(bar.low, 5)  # 最低价
 
+    def agg(self, bar: Bar):
+        if bar is not None:
+            self.volume = self.volume + bar.volume
+            self.money = self.money + bar.money
+            self.open = bar.open
+            self.high = max(self.high, bar.high)
+            self.low = min(self.low, bar.low)
+        return self
+
 
 class Pos:
     def __init__(self, pos):
@@ -60,10 +68,10 @@ class Pos:
 class Log:
     def __init__(self, symbol: str, node: Bin.Node):
         self.node_idx = node.index
-        self.node_val = node.turn.val
-        self.turn_idx = node.turn.prvTurn.idx
-        self.turn_val = node.turn.prvTurn.val
-        self.turn_lvl = node.turn.prvTurn.lvl
+        self.node_val = node.turn.curNode.val
+        self.turn_idx = node.turn.preTurn.idx
+        self.turn_val = node.turn.preTurn.val
+        self.turn_tag = node.turn.preTurn.tag
         self.symbol = symbol
         self.amount = 0
         self.status = 0
@@ -74,40 +82,28 @@ class Log:
         return self
 
 
-class Agg:
-    def __init__(self, period='5m'):
-        self.period = period
-        self.bar = None
-
-    def ohlc(self, bar):
-        new_bar = Bar(bar)
-        if self.bar is not None:
-            new_bar.volume = self.bar.volume + new_bar.volume
-            new_bar.money = self.bar.money + new_bar.money
-            new_bar.open = self.bar.open
-            new_bar.high = max(self.bar.high, new_bar.high)
-            new_bar.low = min(self.bar.low, new_bar.low)
-
-        is_close = self.__is_close(new_bar)
-        self.bar = None if is_close else new_bar
-        return is_close, new_bar
-
-    def __is_close(self, bar: Bar) -> bool:
-        if bar is None:
-            return False
-        if self.period == '5m' and bar.datetime.minute % 5 == 0:
-            return True
-        return False
-
-
 class Silo:
     def __init__(self, maxlen=None):
         self.keys: deque[str] = deque(maxlen=maxlen)
         self.data: deque[Bin.Node] = deque(maxlen=maxlen)
         self.dict: dict = {}
 
+        self._agg_per = None  # 聚合周期
+        self._agg_bar = None  # 聚合bar
+        self._agg_tmp = None  # 聚合node
+
+    def __len__(self):
+        if self._agg_tmp is None:
+            return len(self.data)
+        return len(self.data) + 1
+
     def at(self, idx: int) -> Bin.Node:
-        return self.data[idx]
+        if self._agg_tmp is None:
+            return self.data[idx]
+        if idx == -1 or idx == len(self.data):
+            return self._agg_tmp
+        diff = 1 if idx < 0 else 0
+        return self.data[idx + diff]
 
     def get(self, key: str) -> Bin.Node:
         idx = self.keys.index(key)
@@ -117,15 +113,31 @@ class Silo:
         self.keys.append(node.index)
         self.data.append(node)
 
-    def pop(self) -> Bin.Node:
-        self.keys.pop()
-        return self.data.pop()
+    def agg_per(self, per):
+        self._agg_per = per
+        return self
 
-    def __len__(self):
-        return len(self.data)
+    def agg_add(self, node: Bin.Node):
+        bar = node.bar.agg(self._agg_bar)
+        if self.__is_cut(bar):
+            self.keys.append(node.index)
+            self.data.append(node)
+            self._agg_tmp = None
+            self._agg_bar = None
+        else:
+            self._agg_tmp = node
+            self._agg_bar = bar
+
+    def __is_cut(self, bar: Bar) -> bool:
+        dt = bar.datetime
+        if self._agg_per == '1d':
+            return dt.hour == 15 and dt.minute == 0 and dt.second == 0
+        if self._agg_per == '5m':
+            return dt.minute % 5 == 0
+        return True
 
 
-########################################################################################################################
+############################################################
 class Var:
     class Base:
         def __init__(self):
@@ -151,13 +163,13 @@ class Var:
 
     class Trad:
         def __init__(self):
-            self.sup_quotas = [0.300, 0.300, 0.300]  # 加仓额度（比例）
-            self.sup_bounds = [0.010, 0.015]  # 加仓阈值（比例）
-            self.upper_macd = 0.003  # macd限制（比例）
+            self.rise_bounds = [0.010, 0.015]  # 加仓阈值（比例）
+            self.rise_quotas = [0.300, 0.300, 0.300]  # 加仓额度（比例）
+            self.rise_macd = 0.003  # macd限制（比例）
 
-            self.sub_quotas = [0.300, 0.400, 0.300]  # 减仓额度（比例）
-            self.sub_bounds = [0.015, 0.020, 0.025]  # 减仓阈值（比例）
-            self.lower_macd = -0.003  # macd限制（比例）
+            self.fall_bounds = [0.015, 0.020, 0.025]  # 减仓阈值（比例）
+            self.fall_quotas = [0.300, 0.400, 0.300]  # 减仓额度（比例）
+            self.fall_macd = -0.003  # macd限制（比例）
 
     class Config:
         def __init__(self):
@@ -197,19 +209,18 @@ class Bin:
             self.macd: float = 0.0
 
     class Turn:
-        class Dot:
-            def __init__(self, idx: str, val: float, lvl: int):
-                self.lvl: int = lvl
-                self.idx: str = idx
-                self.val: float = val
+        class Point:
+            def __init__(self, idx: str, val: float, tag: int):
+                self.idx = idx  # 索引
+                self.val = val  # 值
+                self.tag = tag  # 标签
+                self.maxApex = None  # 最大顶点
+                self.minApex = None  # 最小顶点
 
         def __init__(self):
-            self.lvl: int = 0
-            self.val: float = 0.0
-            self.prev_idx: str = ''
-            self.prvTurn: Bin.Turn.Dot | None = None
-            self.maxApex: Bin.Turn.Dot | None = None
-            self.minApex: Bin.Turn.Dot | None = None
+            self.tag = 0  # 标签
+            self.curNode = None  # 当前节点
+            self.preTurn = None  # 前一拐点
 
     class Node:
         def __init__(self, bar):
@@ -227,10 +238,13 @@ class Biz:
             self.bus = bus
 
         def last_pos(self) -> Pos:
-            return self.bus.posSet[-1]
+            return self.bus.posQue[-1]
 
         def last_min(self) -> Bin.Node:
             return self.bus.minSet.at(-1)
+
+        def last_day(self) -> Bin.Node:
+            return self.bus.daySet.at(-1)
 
         def is_out_budget(self) -> bool:
             """是否超过本金上限/亏损上限"""
@@ -248,7 +262,7 @@ class Biz:
 
         def is_stop_buy(self) -> bool:
             """是否暂停买入"""
-            today = self.bus.tmpDay
+            today = self.last_day()
             if today.sma.sma05 <= today.sma.sma10: return True
             if today.sma.sma05 <= today.sma.sma20: return True
             if today.sma.sma05 <= today.sma.sma30: return True
@@ -257,32 +271,32 @@ class Biz:
 
         def is_hit_bound(self, status) -> bool:
             """是否达到阈值边界"""
-            bounds = self.cfg.trad.sup_bounds if status > 0 else self.cfg.trad.sub_bounds
-            last_min = self.last_min()
-            turn_idx = last_min.turn.prev_idx
-
-            # 交易记录：类型相同、拐点相同
-            logs = [log for log in self.bus.logSet if log.status == status and log.turn_idx == turn_idx]
+            turn = self.last_min().turn
+            bounds = self.cfg.trad.rise_bounds if status > 0 else self.cfg.trad.fall_bounds
+            logs = [log for log in self.bus.logQue if log.status == status and log.turn_idx == turn.preTurn.idx]
             if len(logs) < len(bounds):
                 threshold = bounds[len(logs)] * self.bus.ctxMap.get(K.base_price)
-                if (last_min.turn.val - last_min.turn.prvTurn.val) * status > threshold:
+                if (turn.curNode.val - turn.preTurn.val) * status > threshold:
                     return True
             return False
 
     class Qty(Bas):
         def buy_amount(self) -> float:
             """买入数量"""
-            quotas = self.bus.ctxMap.get(K.sup_quotas)
-            if quotas:
-                quota = quotas.pop(0)
-                last_price = self.last_pos().last_price
-                buy_amount = max(self.cfg.base.basic_fund * quota, self.cfg.base.start_fund) / last_price
-                return round(buy_amount / 100) * 100
-            return 0
+            quotas = self.bus.ctxMap.get(K.rise_quotas)
+            if not quotas:
+                return 0
+
+            last_price = self.last_pos().last_price
+            base_price = self.bus.ctxMap.get(K.base_price)
+            price = base_price if last_price == 0 else last_price
+            quota = quotas.pop(0)
+            buy_amount = max(self.cfg.base.basic_fund * quota, self.cfg.base.start_fund) / price
+            return round(buy_amount / 100) * 100
 
         def sell_amount(self) -> float:
             """卖出数量"""
-            quotas = self.bus.ctxMap.get(K.sub_quotas)
+            quotas = self.bus.ctxMap.get(K.fall_quotas)
             if quotas:
                 quota = quotas.pop(0)
                 plan_amount = self.cfg.base.basic_fund * quota
@@ -293,13 +307,14 @@ class Biz:
         def fit_sell_qty(self, plan_qty: int):
             """适配卖出的数量"""
             pos = self.last_pos()
-            last_price = pos.last_price
-            start_qty = round(self.cfg.base.start_fund / last_price / 100) * 100
-            least_qty = round(self.cfg.base.least_fund / last_price / 100) * 100
             avail_qty = pos.avail_amount
+            if avail_qty == 0:
+                return 0
 
             # 计算需要保留的数量
             profit = pos.valuation - pos.principal  # 当前盈利
+            start_qty = round(self.cfg.base.start_fund / pos.last_price / 100) * 100 # 起始数量
+            least_qty = round(self.cfg.base.least_fund / pos.last_price / 100) * 100 # 最小数量
             unavail_qty = pos.total_amount - avail_qty  # 不可用持仓数量
             profit_target = self.cfg.base.basic_fund * self.cfg.base.gain_limit  # 盈利目标
             floor_qty = 0 if unavail_qty == 0 and profit >= profit_target else 100
@@ -339,9 +354,6 @@ class Biz:
             if last_min.sma.sma05 >= last_min.sma.sma10: return False
             if last_min.sma.sma05 >= last_min.sma.sma20: return False
             if last_min.sma.sma05 >= last_min.sma.sma30: return False
-            if last_min.sma.sma05 >= last_min.sma.sma60: return False
-            if last_min.macd.diff > 0: return False
-            if last_min.macd.dea_ > 0: return False
             if last_min.macd.macd > 0: return False
 
             # 是否达到阈值边界
@@ -376,7 +388,7 @@ class Biz:
         def log(self, symbol: str, amount: float):
             last_min = self.last_min()
             last_log = Log(symbol, last_min).act(amount)
-            self.bus.logSet.append(last_log)
+            self.bus.logQue.append(last_log)
             self.bus.ctxMap[K.last_log] = last_log
 
 
@@ -451,115 +463,89 @@ class Line:
     class Turn:
         @staticmethod
         def first(silo: Silo):
-            # 节点集合
             node = silo.at(-1)
-            dot = Bin.Turn.Dot(node.index, node.bar.close, -2)
-            dots = deque(maxlen=3)
-            dots.append(dot)
-            silo.dict.setdefault('dots', dots)
-
-            # 拐点信息
-            node.turn.lvl = -2
-            node.turn.val = node.bar.close
-            node.turn.prev_idx = node.index
-            node.turn.prvTurn = copy.copy(dot)
+            node.turn.tag = -2
+            node.turn.curNode = Bin.Turn.Point(node.index, node.bar.close, -2)
+            node.turn.preTurn = node.turn.curNode
 
         @staticmethod
         def next(silo: Silo, cfg: Var.Config):
-            # 预先设值
             node = silo.at(-1)
-            prev_turn = silo.at(-2).turn
-            node.turn.lvl = 0
-            node.turn.val = node.sma.get(cfg.turn.sma_period)
-            node.turn.prev_idx = prev_turn.prev_idx
-            node.turn.prvTurn = prev_turn.prvTurn
-            node.turn.maxApex = prev_turn.maxApex
-            node.turn.minApex = prev_turn.minApex
-
-            # 跳过连续相等的点
-            dots = silo.dict.get('dots')
-            if node.turn.val == dots[-1].val:
-                return
-
-            # 数据不得小于3条
-            dot = Bin.Turn.Dot(node.index, node.turn.val, 0)
-            dots.append(dot)
-            if len(dots) < 3:
+            value = node.sma.get(cfg.turn.sma_period)
+            node.turn.tag = 0
+            node.turn.curNode = Bin.Turn.Point(node.index, value, 0)
+            node.turn.preTurn = silo.at(-2).turn.preTurn
+            if len(silo) < 3:
                 return
 
             # 价格最小振幅阈值
-            threshold = round(node.turn.val * cfg.turn.least_wave, 5)
-
+            threshold = round(value * cfg.turn.least_wave, 5)
             # 计算顶点、拐点
             Line.Turn.__apex(silo, threshold)
             Line.Turn.__turn(silo, threshold)
 
         @staticmethod
         def __apex(silo: Silo, threshold):
-            turn = silo.at(-1).turn
-            dots = silo.dict.get('dots')
+            point1 = silo.at(-1).turn.curNode
+            point2 = silo.at(-2).turn.curNode
+            point3 = None
+            if point1.val == point2.val:
+                return
+            for i in range(-3, -len(silo) - 1, -1):
+                point3 = silo.at(i).turn.curNode
+                if point3.val != point2.val:
+                    break
+            if point3 is None:
+                return
 
             # 计算顶点
-            dot3 = dots[-3]
-            dot2 = dots[-2]
-            dot1 = dots[-1]
-            if dot3.val < dot2.val > dot1.val:
-                if dot2.val - turn.prvTurn.val >= threshold:
-                    if turn.maxApex is None or dot2.val > turn.maxApex.val:
-                        dot2.lvl = 1
-                        turn.maxApex = dot2
-            elif dot3.val > dot2.val < dot1.val:
-                if turn.prvTurn.val - dot2.val >= threshold:
-                    if turn.minApex is None or dot2.val < turn.minApex.val:
-                        dot2.lvl = -1
-                        turn.minApex = dot2
+            pre_turn = silo.at(-1).turn.preTurn
+            if point3.val < point2.val > point1.val:
+                if point2.val - pre_turn.val >= threshold:
+                    if pre_turn.maxApex is None or point2.val > pre_turn.maxApex.val:
+                        point2.tag = 1
+                        pre_turn.maxApex = point2
+            elif point3.val > point2.val < point1.val:
+                if pre_turn.val - point2.val >= threshold:
+                    if pre_turn.minApex is None or point2.val < pre_turn.minApex.val:
+                        point2.tag = -1
+                        pre_turn.minApex = point2
 
         @staticmethod
         def __turn(silo: Silo, threshold):
             # 起始拐点
             turn = silo.at(-1).turn
-            dots = silo.dict.get('dots')
-            if turn.prvTurn.lvl == -2:
-                diff = turn.prvTurn.val - dots[-1].val
+            if turn.preTurn.tag == -2:
+                diff = turn.preTurn.val - turn.curNode.val
                 if abs(diff) > threshold:
-                    turn.prvTurn.lvl = 1 if diff > 0 else -1
-                    silo.at(0).turn.lvl = turn.prvTurn.lvl
+                    turn.preTurn.tag = 1 if diff > 0 else -1
+                    silo.at(0).turn.tag = turn.preTurn.tag
                 return
 
             # 计算拐点
-            dot = None
-            value = dots[-1].val
-            if turn.maxApex and turn.maxApex.val - value >= threshold:
-                dot = turn.maxApex
-            if turn.minApex and value - turn.minApex.val >= threshold:
-                dot = turn.minApex
-            if dot is not None:
-                silo.get(dot.idx).turn.lvl = dot.lvl
-                turn.prev_idx = dot.idx
-                turn.prvTurn = dot
-                turn.maxApex = None
-                turn.minApex = None
+            point = None
+            pre_turn = turn.preTurn
+            if pre_turn.maxApex and pre_turn.maxApex.val - turn.curNode.val >= threshold:
+                point = pre_turn.maxApex
+            if pre_turn.minApex and turn.curNode.val - pre_turn.minApex.val >= threshold:
+                point = pre_turn.minApex
+            if point is not None:
+                turn.preTurn = point
+                silo.get(point.idx).turn.tag = point.tag
 
 
-########################################################################################################################
-class Kit:
-    def __init__(self, config: str, trader: str):
-        self.config = config  # 配置信息
-        self.trader = trader  # 交易规则
-
-
+############################################################
 class Bus:
     def __init__(self, symbol: str):
         self.symbol = symbol  # 股票代码
-        self.daySet = Silo(maxlen=180)  # 日线数据
-        self.minSet = Silo(maxlen=960)  # 分线数据
-        self.posSet = deque(maxlen=480)  # 仓位数据
-        self.logSet = deque(maxlen=480)  # 操作数据
-        self.tmpDay = None  # 临时日线节点
+        self.daySet = Silo(maxlen=120)  # 日线数据
+        self.minSet = Silo(maxlen=240)  # 分线数据
+        self.logQue = deque(maxlen=360)  # 操作数据
+        self.posQue = deque(maxlen=360)  # 仓位数据
         self.ctxMap = {}  # 上下文数据
 
 
-class Mkt:
+class Market:
     def __init__(self, config: Var.Config, trader: Biz.Trader, bus: Bus):
         self.cfg: Var.Config = config
         self.biz: Biz.Trader = trader
@@ -569,14 +555,16 @@ class Mkt:
     def initialize(self, days, mins):
         self.__handle_bars(self.bus.daySet, days)
         self.__handle_bars(self.bus.minSet, mins, turn=True)
+        self.bus.daySet.agg_per('1d')
+        self.bus.minSet.agg_per('5m')
         self.status = 1
 
     def prepare(self, pos):
         if len(self.bus.minSet) == 0:
             self.status = 0
             return
-        self.bus.ctxMap[K.sup_quotas] = self.cfg.trad.sup_quotas.copy()
-        self.bus.ctxMap[K.sub_quotas] = self.cfg.trad.sub_quotas.copy()
+        self.bus.ctxMap[K.rise_quotas] = self.cfg.trad.rise_quotas.copy()
+        self.bus.ctxMap[K.fall_quotas] = self.cfg.trad.fall_quotas.copy()
         self.bus.ctxMap[K.base_price] = self.bus.minSet.at(-1).bar.close
         self.bus.ctxMap[K.base_amount] = getattr(pos, 'amount', 0.0)
         self.status = 2
@@ -584,22 +572,14 @@ class Mkt:
     def running(self, pos, bar):
         if self.status != 2:
             return
-
-        # 实时数据
-        self.bus.posSet.append(Pos(pos))
-        self.bus.minSet.add(Bin.Node(bar))
+        self.bus.posQue.append(Pos(pos))
+        self.bus.minSet.agg_add(Bin.Node(bar))
         Line.Sma.next(self.bus.minSet)
         Line.Macd.next(self.bus.minSet, self.cfg)
         Line.Turn.next(self.bus.minSet, self.cfg)
-
-        # 临时数据
-        node = Bin.Node(bar)
-        is_temp = node.bar.instant < '15:00:00'
-        self.bus.daySet.add(node)
+        self.bus.daySet.agg_add(Bin.Node(bar))
         Line.Sma.next(self.bus.daySet)
         Line.Macd.next(self.bus.daySet, self.cfg)
-        if is_temp:
-            self.bus.tmpDay = self.bus.daySet.pop()
 
     def trading(self, buy: Callable, sell: Callable):
         if self.status == 2:
@@ -618,8 +598,15 @@ class Mkt:
             if turn: Line.Turn.next(silo, self.cfg)
 
 
+############################################################
+class Kit:
+    def __init__(self, config: str, trader: str):
+        self.config = config  # 配置信息
+        self.trader = trader  # 交易规则
+
+
 class Env:
-    markets: dict[str, Mkt] = {}
+    markets: dict[str, Market] = {}
     classes: dict[str, Type[Var.Config | Biz.Trader]] = {
         "config": Var.Config,
         "trader": Biz.Trader,
@@ -627,13 +614,15 @@ class Env:
     # 黑名单、白名单
     blacks: list[str] = ['515450.SS', '515100.SS']
     whites: dict[str, Kit] = {
-        '159857.SZ': Kit('config', 'trader'),
+        #'515790.SS': Kit('config', 'trader'),
     }
 
+
+class Manager:
     @staticmethod
     def symbols(positions: dict) -> list[str]:
         codes = list(Env.whites)
-        if positions:
+        if positions is not None and positions:
             sids = [pos.sid for pos in positions.values()]
             codes.extend(sids)
         symbols = list(set(codes))
@@ -644,7 +633,7 @@ class Env:
         return symbols
 
     @staticmethod
-    def market(symbol: str) -> Mkt:
+    def market(symbol: str) -> Market:
         market = Env.markets.get(symbol)
         if market is not None:
             return market
@@ -653,33 +642,38 @@ class Env:
         kit = Env.whites.get(symbol, Kit('config', 'trader'))
         config = Env.classes.get(kit.config)()
         trader = Env.classes.get(kit.trader)(config, bus)
-        market = Env.markets.setdefault(symbol, Mkt(config, trader, bus))
+        market = Env.markets.setdefault(symbol, Market(config, trader, bus))
         return market
 
 
 ############################################################
 def initialize(context):
     """启动时执行一次"""
-    positions = get_positions()
-    symbols = Env.symbols(positions)
-    set_universe(symbols)
-    day_his = get_history(180, frequency='1d')
-    min_his = get_history(960, frequency='1m')
-    for symbol in symbols:
-        day_df = day_his.query(f'code in ["{symbol}"]')
-        min_df = min_his.query(f'code in ["{symbol}"]')
-        days = [SimpleNamespace(datetime=idx, **row.to_dict()) for idx, row in day_df.iterrows()]
-        mins = [SimpleNamespace(datetime=idx, **row.to_dict()) for idx, row in min_df.iterrows()]
-        Env.market(symbol).initialize(days, mins)
+    pass
 
 
 def before_trading_start(context, data):
     """每天交易开始之前执行一次"""
-    symbols = Env.markets.keys()
     positions = get_positions()
+    symbols = Manager.symbols(positions)
+    set_universe(symbols)
+
+    # 初始化
+    codes = [symbol for symbol in symbols if Manager.market(symbol).status == 0]
+    if len(codes) != 0:
+        day_his = get_history(120, frequency='1d', security_list=codes)
+        min_his = get_history(240, frequency='5m', security_list=codes)
+        for symbol in symbols:
+            day_df = day_his.query(f'code in ["{symbol}"]')
+            min_df = min_his.query(f'code in ["{symbol}"]')
+            days = [SimpleNamespace(datetime=idx, **row.to_dict()) for idx, row in day_df.iterrows()]
+            mins = [SimpleNamespace(datetime=idx, **row.to_dict()) for idx, row in min_df.iterrows()]
+            Manager.market(symbol).initialize(days, mins)
+
+    # 准备
     for symbol in symbols:
         pos = positions.get(symbol)
-        Env.market(symbol).prepare(pos)
+        Manager.market(symbol).prepare(pos)
 
 
 def handle_data(context, data):
@@ -689,8 +683,8 @@ def handle_data(context, data):
     for symbol in symbols:
         bar = data[symbol]
         pos = positions.get(symbol)
-        Env.market(symbol).running(pos, bar)
-        Env.market(symbol).trading(order, order)
+        Manager.market(symbol).running(pos, bar)
+        Manager.market(symbol).trading(order, order)
 
 
 def after_trading_end(context, data):
