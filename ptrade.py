@@ -86,7 +86,6 @@ class Silo:
     def __init__(self, maxlen=None):
         self.keys: deque[str] = deque(maxlen=maxlen)
         self.data: deque[Bin.Node] = deque(maxlen=maxlen)
-        self.dict: dict = {}
 
         self._agg_per = None  # 聚合周期
         self._agg_bar = None  # 聚合bar
@@ -112,6 +111,13 @@ class Silo:
     def add(self, node: Bin.Node):
         self.keys.append(node.index)
         self.data.append(node)
+
+    def clear(self):
+        self.keys.clear()
+        self.data.clear()
+        self._agg_per = None
+        self._agg_bar = None
+        self._agg_tmp = None
 
     def agg_per(self, per):
         self._agg_per = per
@@ -141,14 +147,16 @@ class Silo:
 class Var:
     class Base:
         def __init__(self):
-            self.begin_time = '09:40:00'  # 开始交易时间
-            self.close_time = '14:55:00'  # 关闭交易时间
+            self.buy__time = ('09:40:00', '14:30:00')  # 交易时间（加仓）
+            self.sell_time = ('09:40:00', '14:00:00')  # 交易时间（减仓）
+            self.back_time = '14:55:00'  # 补仓时间
+
             self.basic_fund = 10000  # 交易基准金额
             self.start_fund = 3000  # 交易起步金额
             self.least_fund = 1000  # 交易最低金额
             self.cost_limit = 1.50  # 成本上限（比例）
             self.loss_limit = 0.15  # 亏损上限（比例）
-            self.gain_limit = 0.10  # 盈利上限（比例）
+            self.gain_limit = 0.15  # 盈利上限（比例）
 
     class Macd:
         def __init__(self):
@@ -159,16 +167,16 @@ class Var:
     class Turn:
         def __init__(self):
             self.least_wave = 0.01  # 最小摆动（比例）
-            self.sma_period = 10  # 所参照sma的周期
+            self.sma_period = 5  # 所参照sma的周期
 
     class Trad:
         def __init__(self):
             self.rise_bounds = [0.010, 0.015]  # 加仓阈值（比例）
-            self.rise_quotas = [0.300, 0.300, 0.300]  # 加仓额度（比例）
+            self.rise_quotas = [0.300, 0.300]  # 加仓额度（比例）
             self.rise_macd = 0.003  # macd限制（比例）
 
-            self.fall_bounds = [0.015, 0.020, 0.025]  # 减仓阈值（比例）
-            self.fall_quotas = [0.300, 0.400, 0.300]  # 减仓额度（比例）
+            self.fall_bounds = [0.010, 0.015]  # 减仓阈值（比例）
+            self.fall_quotas = [0.500, 0.500]  # 减仓额度（比例）
             self.fall_macd = -0.003  # macd限制（比例）
 
     class Config:
@@ -240,11 +248,14 @@ class Biz:
         def last_pos(self) -> Pos:
             return self.bus.posQue[-1]
 
+        def last_day(self) -> Bin.Node:
+            return self.bus.daySet.at(-1)
+
         def last_min(self) -> Bin.Node:
             return self.bus.minSet.at(-1)
 
-        def last_day(self) -> Bin.Node:
-            return self.bus.daySet.at(-1)
+        def live_min(self) -> Bin.Node:
+            return self.bus.livSet.at(-1)
 
         def is_out_budget(self) -> bool:
             """是否超过本金上限/亏损上限"""
@@ -255,29 +266,33 @@ class Biz:
                 return True
             return False
 
-        def is_out_schedule(self) -> bool:
+        def is_out_schedule(self, is_buy: bool) -> bool:
             """是否在日程时间外"""
-            instant = self.last_min().bar.instant
-            return instant < self.cfg.base.begin_time or instant > self.cfg.base.close_time
-
-        def is_stop_buy(self) -> bool:
-            """是否暂停买入"""
-            today = self.last_day()
-            if today.sma.sma05 <= today.sma.sma10: return True
-            if today.sma.sma05 <= today.sma.sma20: return True
-            if today.sma.sma05 <= today.sma.sma30: return True
-            if today.sma.sma05 <= today.sma.sma60: return True
-            return False
+            instant = self.live_min().bar.instant
+            times = self.cfg.base.buy__time if is_buy else self.cfg.base.sell_time
+            return instant < times[0] or instant > times[1]
 
         def is_hit_bound(self, status) -> bool:
             """是否达到阈值边界"""
-            turn = self.last_min().turn
+            turn = self.live_min().turn
             bounds = self.cfg.trad.rise_bounds if status > 0 else self.cfg.trad.fall_bounds
             logs = [log for log in self.bus.logQue if log.status == status and log.turn_idx == turn.preTurn.idx]
             if len(logs) < len(bounds):
                 threshold = bounds[len(logs)] * self.bus.ctxMap.get(K.base_price)
                 if (turn.curNode.val - turn.preTurn.val) * status > threshold:
                     return True
+            return False
+
+        @staticmethod
+        def is_line_fall(silo: Silo) -> bool:
+            """是否下跌"""
+            node = silo.at(-1)
+            if node.sma.sma05 <= node.sma.sma20: return True
+            if node.sma.sma05 <= node.sma.sma30: return True
+            if node.sma.sma05 <= node.sma.sma60: return True
+            if node.macd.diff <= 0: return True
+            if node.macd.dea_ <= 0: return True
+            if node.macd.macd <= 0: return True
             return False
 
     class Qty(Bas):
@@ -304,6 +319,15 @@ class Biz:
                 return -sell_amount
             return 0
 
+        def back_amount(self) -> float:
+            """补仓数量"""
+            pos = self.last_pos()
+            last_price = pos.last_price
+            base_price = self.bus.ctxMap.get(K.base_price)
+            price = base_price if last_price == 0 else last_price
+            back_amount = max(self.cfg.base.basic_fund - pos.valuation, self.cfg.base.start_fund) / price
+            return round(back_amount / 100) * 100
+
         def fit_sell_qty(self, plan_qty: int):
             """适配卖出的数量"""
             pos = self.last_pos()
@@ -313,8 +337,8 @@ class Biz:
 
             # 计算需要保留的数量
             profit = pos.valuation - pos.principal  # 当前盈利
-            start_qty = round(self.cfg.base.start_fund / pos.last_price / 100) * 100 # 起始数量
-            least_qty = round(self.cfg.base.least_fund / pos.last_price / 100) * 100 # 最小数量
+            start_qty = round(self.cfg.base.start_fund / pos.last_price / 100) * 100  # 起始数量
+            least_qty = round(self.cfg.base.least_fund / pos.last_price / 100) * 100  # 最小数量
             unavail_qty = pos.total_amount - avail_qty  # 不可用持仓数量
             profit_target = self.cfg.base.basic_fund * self.cfg.base.gain_limit  # 盈利目标
             floor_qty = 0 if unavail_qty == 0 and profit >= profit_target else 100
@@ -332,32 +356,31 @@ class Biz:
     class Trader(Qty):
         def is_buy(self) -> bool:
             """判断是否买入"""
-            last_min = self.last_min()
-            if self.is_stop_buy(): return False
             if self.is_out_budget():  return False
-            if self.is_out_schedule(): return False
-            if last_min.sma.sma05 <= last_min.sma.sma10: return False
-            if last_min.sma.sma05 <= last_min.sma.sma20: return False
-            if last_min.sma.sma05 <= last_min.sma.sma30: return False
-            if last_min.sma.sma05 <= last_min.sma.sma60: return False
-            if last_min.macd.diff < 0: return False
-            if last_min.macd.dea_ < 0: return False
-            if last_min.macd.macd < 0: return False
-
+            if self.is_out_schedule(is_buy=True): return False
+            if self.is_line_fall(self.bus.daySet): return False
+            if self.is_line_fall(self.bus.minSet): return False
+            if self.is_line_fall(self.bus.livSet): return False
             # 是否达到阈值边界
             return self.is_hit_bound(1)
 
         def is_sell(self) -> bool:
             """判断是否卖出"""
-            last_min = self.last_min()
-            if self.is_out_schedule(): return False
-            if last_min.sma.sma05 >= last_min.sma.sma10: return False
-            if last_min.sma.sma05 >= last_min.sma.sma20: return False
-            if last_min.sma.sma05 >= last_min.sma.sma30: return False
-            if last_min.macd.macd > 0: return False
+            if self.is_out_schedule(is_buy=False): return False
+            if not self.is_line_fall(self.bus.daySet): return False
+            if not self.is_line_fall(self.bus.minSet): return False
+            if not self.is_line_fall(self.bus.livSet): return False
 
             # 是否达到阈值边界
             return self.is_hit_bound(-1)
+
+        def is_back(self) -> bool:
+            """是否补仓"""
+            last_min = self.live_min()
+            if last_min.bar.instant != self.cfg.base.back_time: return False
+            if self.is_line_fall(self.bus.daySet): return False
+            if self.is_out_budget():  return False
+            return True
 
         def trading(self, buy: Callable, sell: Callable):
             """执行交易"""
@@ -365,28 +388,28 @@ class Biz:
             is_live = self.cfg.env == 'Live'
             is_test = self.cfg.env == 'Test'
 
+            # 卖出
+            amount = 0
+            if self.is_sell():
+                amount = self.sell_amount()
+                if amount >= 0: return
+                if is_live: sell(symbol, amount)
+                if is_test: sell(size=-amount)
+                self.log(symbol, amount)
+                return
+
             # 买入
             if self.is_buy():
                 amount = self.buy_amount()
-                if is_live and amount > 0:
-                    buy(symbol, amount)
-                    self.log(symbol, amount)
-                if is_test and amount > 0:
-                    buy(size=amount)
-                    self.log(symbol, amount)
-
-            # 卖出
-            if self.is_sell():
-                amount = self.sell_amount()
-                if is_live and amount < 0:
-                    sell(symbol, amount)
-                    self.log(symbol, amount)
-                if is_test and amount < 0:
-                    sell(size=-amount)
-                    self.log(symbol, amount)
+            elif self.is_back():
+                amount = self.back_amount()
+            if amount <= 0: return
+            if is_live: buy(symbol, amount)
+            if is_test: buy(size=amount)
+            self.log(symbol, amount)
 
         def log(self, symbol: str, amount: float):
-            last_min = self.last_min()
+            last_min = self.live_min()
             last_log = Log(symbol, last_min).act(amount)
             self.bus.logQue.append(last_log)
             self.bus.ctxMap[K.last_log] = last_log
@@ -539,7 +562,8 @@ class Bus:
     def __init__(self, symbol: str):
         self.symbol = symbol  # 股票代码
         self.daySet = Silo(maxlen=120)  # 日线数据
-        self.minSet = Silo(maxlen=240)  # 分线数据
+        self.minSet = Silo(maxlen=240)  # 五分钟线
+        self.livSet = Silo(maxlen=240)  # 一分钟线
         self.logQue = deque(maxlen=360)  # 操作数据
         self.posQue = deque(maxlen=360)  # 仓位数据
         self.ctxMap = {}  # 上下文数据
@@ -550,40 +574,54 @@ class Market:
         self.cfg: Var.Config = config
         self.biz: Biz.Trader = trader
         self.bus: Bus = bus
-        self.status = 0
+        self.status = -1
 
     def initialize(self, days, mins):
         self.__handle_bars(self.bus.daySet, days)
         self.__handle_bars(self.bus.minSet, mins, turn=True)
         self.bus.daySet.agg_per('1d')
         self.bus.minSet.agg_per('5m')
-        self.status = 1
+        self.status = 0
 
     def prepare(self, pos):
-        if len(self.bus.minSet) == 0:
-            self.status = 0
-            return
-        self.bus.ctxMap[K.rise_quotas] = self.cfg.trad.rise_quotas.copy()
-        self.bus.ctxMap[K.fall_quotas] = self.cfg.trad.fall_quotas.copy()
-        self.bus.ctxMap[K.base_price] = self.bus.minSet.at(-1).bar.close
-        self.bus.ctxMap[K.base_amount] = getattr(pos, 'amount', 0.0)
-        self.status = 2
+        if self.status < 0: return
+        ctx = self.bus.ctxMap
+        ctx[K.rise_quotas] = self.cfg.trad.rise_quotas.copy()
+        ctx[K.fall_quotas] = self.cfg.trad.fall_quotas.copy()
+        ctx[K.base_price] = self.bus.minSet.at(-1).bar.close
+        ctx[K.base_amount] = getattr(pos, 'amount', 0.0)
+        self.bus.livSet.clear()
+        self.status = 1
 
     def running(self, pos, bar):
-        if self.status != 2:
-            return
+        if self.status < 1: return
         self.bus.posQue.append(Pos(pos))
-        self.bus.minSet.agg_add(Bin.Node(bar))
-        Line.Sma.next(self.bus.minSet)
-        Line.Macd.next(self.bus.minSet, self.cfg)
-        Line.Turn.next(self.bus.minSet, self.cfg)
+
+        # 日线
         self.bus.daySet.agg_add(Bin.Node(bar))
         Line.Sma.next(self.bus.daySet)
         Line.Macd.next(self.bus.daySet, self.cfg)
 
+        # 五分钟线
+        self.bus.minSet.agg_add(Bin.Node(bar))
+        Line.Sma.next(self.bus.minSet)
+        Line.Macd.next(self.bus.minSet, self.cfg)
+
+        # 一分钟线
+        self.bus.livSet.add(Bin.Node(bar))
+        if self.status == 1:
+            Line.Sma.first(self.bus.livSet)
+            Line.Macd.first(self.bus.livSet)
+            Line.Turn.first(self.bus.livSet)
+        else:
+            Line.Sma.next(self.bus.livSet)
+            Line.Macd.next(self.bus.livSet, self.cfg)
+            Line.Turn.next(self.bus.livSet, self.cfg)
+        self.status = 2
+
     def trading(self, buy: Callable, sell: Callable):
-        if self.status == 2:
-            self.biz.trading(buy, sell)
+        if self.status != 2: return
+        self.biz.trading(buy, sell)
 
     def __handle_bars(self, silo: Silo, bars, sma=True, macd=True, turn=False):
         if not bars: return
@@ -614,7 +652,7 @@ class Env:
     # 黑名单、白名单
     blacks: list[str] = ['515450.SS', '515100.SS']
     whites: dict[str, Kit] = {
-        #'515790.SS': Kit('config', 'trader'),
+        # '515790.SS': Kit('config', 'trader'),
     }
 
 
