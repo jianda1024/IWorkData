@@ -27,6 +27,50 @@ from typing import Callable, Type
 import pandas as pd
 
 
+class Var:
+    class Base:
+        def __init__(self):
+            self.buy__time = ('09:40:00', '14:30:00')  # 交易时间（加仓）
+            self.sell_time = ('09:40:00', '14:00:00')  # 交易时间（减仓）
+            self.back_time = '14:55:00'  # 补仓时间
+
+            self.basic_fund = 10000  # 交易基准金额
+            self.start_fund = 3000  # 交易起步金额
+            self.least_fund = 1000  # 交易最低金额
+            self.cost_limit = 1.50  # 成本上限（比例）
+            self.loss_limit = 0.15  # 亏损上限（比例）
+            self.gain_limit = 0.15  # 盈利上限（比例）
+
+    class Macd:
+        def __init__(self):
+            self.fast = 13  # 快线周期
+            self.slow = 60  # 慢线周期
+            self.sign = 5  # 信号线周期
+
+    class Turn:
+        def __init__(self):
+            self.least_wave = 0.01  # 最小摆动（比例）
+            self.sma_period = 5  # 所参照sma的周期
+
+    class Trad:
+        def __init__(self):
+            self.rise_bounds = [0.010, 0.015]  # 加仓阈值（比例）
+            self.rise_quotas = [0.300, 0.300]  # 加仓额度（比例）
+            self.rise_macd = 0.003  # macd限制（比例）
+
+            self.fall_bounds = [0.010, 0.015]  # 减仓阈值（比例）
+            self.fall_quotas = [0.500, 0.500]  # 减仓额度（比例）
+            self.fall_macd = -0.003  # macd限制（比例）
+
+    class Config:
+        def __init__(self):
+            self.env = 'Live'  # 测试--Test、线上--Live
+            self.base: Var.Base = Var.Base()
+            self.macd: Var.Macd = Var.Macd()
+            self.turn: Var.Turn = Var.Turn()
+            self.trad: Var.Trad = Var.Trad()
+
+
 class Bar:
     class Ema:
         _attrs = {5: 'ema05', 10: 'ema10', 20: 'ema20', 30: 'ema30', 60: 'ema60'}
@@ -153,16 +197,19 @@ class Line:
             node.macd.macd = macd
 
 
+############################################################
+
+
 class Market:
-    def __init__(self):
+    def __init__(self, symbol: str, cfg: Var.Config):
         self.bars: list[Bar.Node] = []
+        self.symbol = symbol
+        self.cfg = cfg
         self.ctx = {}
-        self.cfg = {}
 
     def clear(self):
         self.bars = []
         self.ctx = {}
-        self.cfg = {}
 
     def get(self, idx: int) -> Bar.Node:
         return self.bars[idx]
@@ -173,19 +220,40 @@ class Market:
 
 ############################################################
 class Env:
-    symbols: list[str] = ['515450.SS', '515100.SS']
     markets: dict[str, Market] = {}
+    symbols: list[str] = [
+        '515450.SS',
+    ]
+    configs: dict[str, Type[Var.Config]] = {
+        "515450.SS": Var.Config,
+    }
+
+    @staticmethod
+    def market(symbol: str) -> Market:
+        market = Env.markets.get(symbol)
+        if market is None:
+            config = Env.configs.get(symbol)()
+            market = Env.markets.setdefault(symbol, Market(symbol, config))
+        return market
 
 
 ############################################################
 def initialize(context):
     """启动时执行一次"""
-    set_universe(Env.symbols)
     pass
 
 
 def before_trading_start(context, data):
     """每天交易开始之前执行一次"""
+    positions = get_positions(Env.symbols)
+    for symbol in Env.symbols:
+        pos = positions.get(symbol)
+        if pos is None:
+
+
+    codes = list(Env.symbols)
+
+
     set_universe(Env.symbols)
     pos = positions.get(symbol)
 
@@ -209,9 +277,11 @@ def before_trading_start(context, data):
         pos = positions.get(symbol)
         Manager.market(symbol).prepare(pos)
 
-def tick_data(context,data):
+
+def tick_data(context, data):
     """每个tick执行一次"""
     pass
+
 
 def handle_data(context, data):
     """每个单位周期执行一次"""
