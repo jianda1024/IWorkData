@@ -29,7 +29,8 @@ import pandas as pd
 
 class Var:
     base_fund: int = 3200  # 交易基础金额（元）
-    back_time: str = '14:55:00'  # 补仓时间（HH:MM:SS）
+    open_time: str = '09:35:00'  # 开启交易时间（HH:MM:SS）
+    back_time: str = '14:55:00'  # 补仓买回时间（HH:MM:SS）
 
     class Macd:
         fast: int = 12  # 快线周期
@@ -59,13 +60,12 @@ class Bin:
             self.valuation: float = round(self.total_amount * self.last_price, 2)  # 市值
             self.principal: float = round(self.total_amount * self.cost_price, 2)  # 本金
 
-    class Sma:
+    class Ema:
         def __init__(self):
-            self.sma05: float = 0.0
-            self.sma10: float = 0.0
-            self.sma20: float = 0.0
-            self.sma30: float = 0.0
-            self.sma60: float = 0.0
+            self.ema05: float = 0.0
+            self.ema10: float = 0.0
+            self.ema20: float = 0.0
+            self.ema30: float = 0.0
 
     class Macd:
         def __init__(self):
@@ -76,53 +76,18 @@ class Bin:
             self.dea_: float = 0.0
             self.macd: float = 0.0
 
-    class Tick:
-        def __init__(self, tick: pd.Series):
-            self.trade_status = 0.0  # 交易状态TRADE交易中
-            self.hsTimeStamp = 0.0  # 时间戳，格式为YYYYMMDDHHMISS
-            self.trade_mins = 0.0  # 交易时间，距离开盘已过多少分钟
-
-            self.amount = 0.0  # 持仓量
-            self.business_amount = 0.0  # 成交数量
-            self.business_amount_in = 0.0  # 内盘成交量
-            self.business_amount_out = 0.0  # 外盘成交量
-            self.business_balance = 0.0  # 成交金额
-            self.business_count = 0.0  # 成交笔数
-            self.current_amount = 0.0  # 最近成交量(现手)
-
-            self.up_px = 0.0  # 涨停价格
-            self.down_px = 0.0  # 跌停价格
-            self.preclose_px = 0.0  # 昨收价
-            self.open_px = 0.0  # 今开盘价
-            self.last_px = 0.0  # 最新成交价
-            self.high_px = 0.0  # 最高价
-            self.low_px = 0.0  # 最低价
-            self.avg_px = 0.0  # 均价
-
-            self.turnover_ratio = 0.0  # 换手率
-            self.entrust_diff = 0.0  # 委差
-            self.entrust_rate = 0.0  # 委比
-            self.vol_ratio = 0.0  # 量比
-
-            self.offer_grp = {}  # 卖档位
-            self.bid_grp = {}  # 买档位
-
-            data = tick.to_dict()
-            for key, value in data.items():
-                setattr(self, str(key), value)
-
     class Node:
-        def __init__(self, bar):
+        def __init__(self, bar, flag=0):
             self.idx: str = bar.datetime.strftime('%Y-%m-%d %H:%M:%S')
             self.bar: Bin.Bar = Bin.Bar(bar)
-            self.sma: Bin.Sma = Bin.Sma()
+            self.ema: Bin.Ema = Bin.Ema()
             self.macd: Bin.Macd = Bin.Macd()
+            self.flag: int = flag
 
 
 class Bus:
     def __init__(self, maxlen=None):
         self.data: deque[Bin.Node] = deque(maxlen=maxlen)
-        self.temp = {}
 
     def __len__(self):
         return len(self.data)
@@ -133,87 +98,74 @@ class Bus:
     def get(self, idx: int) -> Bin.Node:
         return self.data[idx]
 
-    def clear(self):
-        self.data.clear()
-        self.temp.clear()
+    def rollback(self):
+        node = self.data.pop()
+        if node.flag >= 0:
+            self.data.append(node)
 
 
 class Line:
-    class Sma:
-        _keys = {5: 'sma05', 10: 'sma10', 20: 'sma20', 30: 'sma30', 60: 'sma60'}
+    class Ema:
+        _fields = {5: 'ema05', 10: 'ema10', 20: 'ema20', 30: 'ema30'}
 
         @staticmethod
         def calc(bus: Bus):
             node = bus.get(-1)
-            if len(bus) == 1:
-                Line.Sma._prep(bus, node, 5)
-                Line.Sma._prep(bus, node, 10)
-                Line.Sma._prep(bus, node, 20)
-                Line.Sma._prep(bus, node, 30)
-                Line.Sma._prep(bus, node, 60)
-            else:
-                Line.Sma._next(bus, node, 5)
-                Line.Sma._next(bus, node, 10)
-                Line.Sma._next(bus, node, 20)
-                Line.Sma._next(bus, node, 30)
-                Line.Sma._next(bus, node, 60)
-
-        @staticmethod
-        def _prep(bus: Bus, node: Bin.Node, period: int):
-            key = Line.Sma._keys.get(period)
-            dqe = deque(maxlen=period)
             price = node.bar.price
-            dqe.append(price)
-            bus.temp[key] = dqe
-            setattr(node.sma, key, price)
+            curr_ema = node.ema
+            if len(bus) == 1:
+                curr_ema.ema05 = price
+                curr_ema.ema10 = price
+                curr_ema.ema20 = price
+                curr_ema.ema30 = price
+            else:
+                prev_ema = bus.get(-2).ema
+                Line.Ema.next(prev_ema, curr_ema, price, 5)
+                Line.Ema.next(prev_ema, curr_ema, price, 10)
+                Line.Ema.next(prev_ema, curr_ema, price, 20)
+                Line.Ema.next(prev_ema, curr_ema, price, 30)
 
         @staticmethod
-        def _next(bus: Bus, node: Bin.Node, period: int):
-            key = Line.Sma._keys.get(period)
-            dqe = bus.temp.get(key)
-            dqe.append(node.bar.price)
-            value = round(sum(dqe) / len(dqe), 5)
-            setattr(node.sma, key, value)
+        def next(prev_ema: Bin.Ema, curr_ema: Bin.Ema, price: float, period: int):
+            field = Line.Ema._fields.get(period)
+            prev_val = getattr(prev_ema, field, 0.0)
+            curr_val = Line.Ema.ema(prev_val, price, period)
+            setattr(curr_ema, field, curr_val)
+
+        @staticmethod
+        def ema(prev_val: float, price: float, period: int):
+            alpha = 2 / (period + 1)
+            value = alpha * price + (1 - alpha) * prev_val
+            return round(value, 5)
 
     class Macd:
         @staticmethod
         def calc(bus: Bus):
+            node = bus.get(-1)
+            price = node.bar.price
+            curr_macd = node.macd
             if len(bus) == 1:
-                Line.Macd._prep(bus)
+                curr_macd.fast = price
+                curr_macd.slow = price
+                curr_macd.dif_ = 0.0
+                curr_macd.dea_ = 0.0
+                curr_macd.macd = 0.0
             else:
-                Line.Macd._next(bus)
+                prev_macd = bus.get(-2).macd
+                Line.Macd.next(prev_macd, curr_macd, price)
 
         @staticmethod
-        def _prep(bus: Bus):
-            node = bus.get(-1)
-            price = node.bar.price
-            node.macd.fast = price
-            node.macd.slow = price
-            node.macd.dif_ = 0.0
-            node.macd.dea_ = 0.0
-            node.macd.macd = 0.0
-
-        @staticmethod
-        def _next(bus: Bus):
-            node = bus.get(-1)
-            price = node.bar.price
-            pre_macd = bus.get(-2).macd
-            fast = Line.Macd._ema(price, Var.Macd.fast, pre_macd.fast)
-            slow = Line.Macd._ema(price, Var.Macd.slow, pre_macd.slow)
+        def next(prev_macd: Bin.Macd, curr_macd: Bin.Macd, price: float):
+            fast = Line.Ema.ema(prev_macd.fast, price, Var.Macd.fast)
+            slow = Line.Ema.ema(prev_macd.slow, price, Var.Macd.slow)
             dif_ = round(fast - slow, 5)
-            dea_ = Line.Macd._ema(dif_, Var.Macd.sign, pre_macd.dea_)
+            dea_ = Line.Ema.ema(prev_macd.dea_, dif_, Var.Macd.sign)
             macd = round((dif_ - dea_) * 2, 5)
-            node.macd.fast = fast
-            node.macd.slow = slow
-            node.macd.dif_ = dif_
-            node.macd.dea_ = dea_
-            node.macd.macd = macd
-
-        @staticmethod
-        def _ema(price: float, period: int, prev_val: float):
-            alpha = 2 / (period + 1)
-            value = alpha * price + (1 - alpha) * prev_val
-            return round(value, 5)
+            curr_macd.fast = fast
+            curr_macd.slow = slow
+            curr_macd.dif_ = dif_
+            curr_macd.dea_ = dea_
+            curr_macd.macd = macd
 
 
 ############################################################
@@ -221,7 +173,6 @@ class Market:
     def __init__(self, symbol: str):
         self.dayBus = Bus(maxlen=120)  # 日线数据
         self.fenBus = Bus(maxlen=240)  # 分钟数据
-        self.tikBus = Bus(maxlen=480)  # 秒钟数据
         self.symbol = symbol  # 股票代码
         self.nowPos = None  # 当前持仓
         self.ctxMap = {}  # 上下文数据
@@ -231,15 +182,19 @@ class Market:
             return self
         for bar in bars:
             self.dayBus.add(Bin.Node(bar))
-            Line.Sma.calc(self.dayBus)
+            Line.Ema.calc(self.dayBus)
             Line.Macd.calc(self.dayBus)
         return self
 
     def running(self, pos, bar):
         self.nowPos = Bin.Pos(pos)
         self.fenBus.add(Bin.Node(bar))
-        Line.Sma.calc(self.fenBus)
+        Line.Ema.calc(self.fenBus)
         Line.Macd.calc(self.fenBus)
+        self.dayBus.rollback()
+        self.dayBus.add(Bin.Node(bar, flag=-1))
+        Line.Ema.calc(self.dayBus)
+        Line.Macd.calc(self.dayBus)
 
     def trading(self, buy: Callable, sell: Callable):
         pass
@@ -259,15 +214,13 @@ class Trader:
     def sell_amount(market: Market) -> float:
         """卖出数量"""
         pos = market.nowPos
-        least_amount = round(1000 / pos.last_price / 100) * 100
-        if pos.avail_amount < least_amount:
+        if pos.avail_amount * pos.last_price < 1000:
             return 0
-        sell_amount = round(Var.base_fund / pos.last_price / 100) * 100
-        if pos.avail_amount > sell_amount:
+        base_amount = round(Var.base_fund / pos.last_price / 100) * 100
+        sell_amount = min(pos.avail_amount, base_amount)
+        if sell_amount < pos.total_amount:
             return sell_amount
-        if pos.avail_amount < pos.total_amount:
-            return pos.avail_amount
-        return pos.avail_amount - 100
+        return sell_amount - 100
 
 
 ############################################################
