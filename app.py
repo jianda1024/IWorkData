@@ -24,6 +24,8 @@ from collections import deque
 from types import SimpleNamespace
 from typing import Callable
 
+import pandas as pd
+
 
 class Var:
     base_fund = 3200  # 交易基础金额（元）
@@ -35,6 +37,28 @@ class Var:
         slow = 26  # 慢线周期
         sign = 9  # 信号线周期
         base = 5  # 基准周期
+
+
+class Bus:
+    def __init__(self, maxlen=None):
+        self.data: deque[Node] = deque(maxlen=maxlen)
+
+    def __len__(self):
+        return len(self.data)
+
+    def add(self, node: Node):
+        self.data.append(node)
+
+    def get(self, idx: int) -> Node:
+        return self.data[idx]
+
+    def last(self) -> Node:
+        return self.data[-1]
+
+    def rollback(self):
+        node = self.data.pop()
+        if node.state >= 0:
+            self.data.append(node)
 
 
 class Bin:
@@ -78,35 +102,64 @@ class Bin:
             self.dea_: float = 0.0
             self.macd: float = 0.0
 
-    class Node:
-        def __init__(self, bar, flag=0):
-            self.idx: str = bar.datetime.strftime('%Y-%m-%d %H:%M:%S')
-            self.bar: Bin.Bar = Bin.Bar(bar)
-            self.ema: Bin.Ema = Bin.Ema()
-            self.macd: Bin.Macd = Bin.Macd()
-            self.flag: int = flag
+    class Tick:
+        def __init__(self, tick: pd.Series):
+            self.trade_status = 0.0  # 交易状态TRADE交易中
+            self.hsTimeStamp = 0.0  # 时间戳，格式为YYYYMMDDHHMISS
+            self.trade_mins = 0.0  # 交易时间，距离开盘已过多少分钟
+
+            self.amount = 0.0  # 持仓量
+            self.business_amount = 0.0  # 成交数量
+            self.business_amount_in = 0.0  # 内盘成交量
+            self.business_amount_out = 0.0  # 外盘成交量
+            self.business_balance = 0.0  # 成交金额
+            self.business_count = 0.0  # 成交笔数
+            self.current_amount = 0.0  # 最近成交量(现手)
+
+            self.up_px = 0.0  # 涨停价格
+            self.down_px = 0.0  # 跌停价格
+            self.preclose_px = 0.0  # 昨收价
+            self.open_px = 0.0  # 今开盘价
+            self.last_px = 0.0  # 最新成交价
+            self.high_px = 0.0  # 最高价
+            self.low_px = 0.0  # 最低价
+            self.avg_px = 0.0  # 均价
+
+            self.turnover_ratio = 0.0  # 换手率
+            self.entrust_diff = 0.0  # 委差
+            self.entrust_rate = 0.0  # 委比
+            self.vol_ratio = 0.0  # 量比
+
+            self.offer_grp = {}  # 卖档位
+            self.bid_grp = {}  # 买档位
+
+            data = tick.to_dict()
+            for key, value in data.items():
+                setattr(self, str(key), value)
 
 
-class Bus:
-    def __init__(self, maxlen=None):
-        self.data: deque[Bin.Node] = deque(maxlen=maxlen)
+class Node:
+    def __init__(self):
+        self.state: int = 0
+        self.index: str = ''
+        self.price: float = 0.0
+        self.ema: Bin.Ema = Bin.Ema()
+        self.macd: Bin.Macd = Bin.Macd()
+        self._bar: Bin.Bar | None = None
+        self._tik: Bin.Tick | None = None
 
-    def __len__(self):
-        return len(self.data)
+    def bar(self, bar, state=0) -> Node:
+        self._bar = Bin.Bar(bar)
+        self.index = self._bar.datetime.strftime('%Y-%m-%d %H:%M:%S')
+        self.price = self._bar.close
+        self.state = state
+        return self
 
-    def add(self, node: Bin.Node):
-        self.data.append(node)
-
-    def get(self, idx: int) -> Bin.Node:
-        return self.data[idx]
-
-    def last(self) -> Bin.Node:
-        return self.data[-1]
-
-    def rollback(self):
-        node = self.data.pop()
-        if node.flag >= 0:
-            self.data.append(node)
+    def tik(self, tick) -> Node:
+        self._tik = Bin.Tick(tick)
+        self.index = self._tik.hsTimeStamp
+        self.price = self._tik.last_px
+        return self
 
 
 class Line:
@@ -114,7 +167,7 @@ class Line:
         @staticmethod
         def calc(bus: Bus):
             node = bus.last()
-            price = node.bar.price
+            price = node.price
             curr_ema = node.ema
             if len(bus) == 1:
                 Line.Ema.first(curr_ema, price)
@@ -153,7 +206,7 @@ class Line:
         @staticmethod
         def calc(bus: Bus):
             node = bus.last()
-            price = node.bar.price
+            price = node.price
             curr_macd = node.macd
             if len(bus) == 1:
                 curr_macd.fast = price
@@ -201,7 +254,7 @@ class Broker:
         return sell_amount - 100
 
     @staticmethod
-    def is_today_buy(market: Market) -> bool:
+    def is_buy_day(market: Market) -> bool:
         """当天是否执行买入"""
         macd = market.dayBus.last().macd
         if macd.dif_ < 0 and macd.dea_ < 0 and macd.macd < 1:
@@ -218,14 +271,22 @@ class Broker:
         pos = market.nowPos
         return pos.avail_amount * pos.last_price >= 1000
 
-    
+    @staticmethod
+    def buy(market: Market, buy: Callable):
+        if not Broker.is_buy_day(market):
+            return
 
+    @staticmethod
+    def sell(market: Market, sell: Callable):
+        if not Broker.is_sell_day(market):
+            return
 
 
 class Market:
     def __init__(self, symbol: str):
         self.dayBus = Bus(maxlen=120)  # 日线数据
         self.fenBus = Bus(maxlen=240)  # 分钟数据
+        self.tikBus = Bus(maxlen=600)  # tick数据
         self.symbol = symbol  # 股票代码
         self.nowPos = None  # 当前持仓
         self.ctxMap = {}  # 上下文数据
@@ -234,22 +295,29 @@ class Market:
         if not bars:
             return self
         for bar in bars:
-            self.dayBus.add(Bin.Node(bar))
+            self.dayBus.add(Node().bar(bar))
             Line.Ema.calc(self.dayBus)
             Line.Macd.calc(self.dayBus)
         return self
 
     def running(self, pos, bar):
         self.nowPos = Bin.Pos(pos)
-        self.fenBus.add(Bin.Node(bar))
+        self.fenBus.add(Node().bar(bar))
         Line.Ema.calc(self.fenBus)
         Line.Macd.calc(self.fenBus)
         self.dayBus.rollback()
-        self.dayBus.add(Bin.Node(bar, flag=-1))
+        self.dayBus.add(Node().bar(bar, state=-1))
         Line.Ema.calc(self.dayBus)
         Line.Macd.calc(self.dayBus)
 
+    def ticking(self, tik):
+        self.tikBus.add(Node().tik(tik))
+        Line.Ema.calc(self.tikBus)
+        Line.Macd.calc(self.tikBus)
+
     def trading(self, buy: Callable, sell: Callable):
+        Broker.buy(self, buy)
+        Broker.sell(self, sell)
         pass
 
 
@@ -328,7 +396,14 @@ def handle_data(context, data):
 
 def tick_data(context, data):
     """每个tick执行一次"""
-    pass
+    if not is_trade():
+        return
+    cur_time = context.blotter.current_dt.strftime("%H:%M:%S")
+    if cur_time > '10:00:00':
+        return
+    for symbol, market in Env.markets.items():
+        tick = data[symbol]['tick'].iloc[0]
+        market.ticking(tick)
 
 
 def after_trading_end(context, data):
