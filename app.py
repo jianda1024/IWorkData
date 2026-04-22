@@ -29,7 +29,7 @@ import pandas as pd
 
 class Var:
     base_fund = 3200  # 交易基础金额（元）
-    open_time = '09:45:00'  # 开启交易时间（HH:MM:SS）
+    tick_time = '09:36:00'  # tick时间（HH:MM:SS）
     back_time = '14:55:00'  # 补仓买回时间（HH:MM:SS）
 
     class Macd:
@@ -145,20 +145,21 @@ class Node:
         self.price: float = 0.0
         self.ema: Bin.Ema = Bin.Ema()
         self.macd: Bin.Macd = Bin.Macd()
-        self._bar: Bin.Bar | None = None
-        self._tik: Bin.Tick | None = None
+        self.bar: Bin.Bar | None = None
+        self.tick: Bin.Tick | None = None
 
-    def bar(self, bar, state=0) -> Node:
-        self._bar = Bin.Bar(bar)
-        self.index = self._bar.datetime.strftime('%Y-%m-%d %H:%M:%S')
-        self.price = self._bar.close
+    def new(self, bar, state=0) -> Node:
+        self.bar = Bin.Bar(bar)
+        self.index = self.bar.datetime.strftime('%H:%M:%S')
+        self.price = self.bar.close
         self.state = state
         return self
 
-    def tik(self, tick) -> Node:
-        self._tik = Bin.Tick(tick)
-        self.index = self._tik.hsTimeStamp
-        self.price = self._tik.last_px
+    def add(self, tick) -> Node:
+        self.tick = Bin.Tick(tick)
+        self.price = self.tick.last_px
+        datatime = pd.to_datetime(self.tick.hsTimeStamp, format="%Y%m%d%H%M%S")
+        self.index = datatime.strftime("%H:%M:%S")
         return self
 
 
@@ -266,10 +267,10 @@ class Broker:
         return True
 
     @staticmethod
-    def is_sell_day(market: Market) -> bool:
+    def unable_sell(market: Market) -> bool:
         """当天是否执行卖出"""
         pos = market.nowPos
-        return pos.avail_amount * pos.last_price >= 1000
+        return pos.avail_amount * pos.last_price < 1000
 
     @staticmethod
     def buy(market: Market, buy: Callable):
@@ -278,7 +279,34 @@ class Broker:
 
     @staticmethod
     def sell(market: Market, sell: Callable):
-        if not Broker.is_sell_day(market):
+        if Broker.unable_sell(market):
+            return
+
+    @staticmethod
+    def tick_trade(market: Market, sell: Callable):
+        if Broker.unable_sell(market): return
+        if len(market.tikBus) == 0: return
+        node = market.tikBus.last()
+        if node.ema.dif10 > 0: return
+        if node.ema.dif20 > 0: return
+        if node.ema.dif30 > 0: return
+        if node.macd.macd > 0: return
+        if node.macd.dif_ > 0: return
+        if node.macd.dea_ > 0: return
+        if node.macd.dif_ > node.macd.dea_: return
+        # 开盘急跌
+        tick = node.tick
+        fall = (tick.last_px - tick.open_px) / tick.preclose_px
+        if fall > -0.005: return
+        # 卖出
+        amount = Broker.sell_amount(market)
+        sell(market.symbol, -amount, limit_price=tick.last_px - 0.003)
+
+    @staticmethod
+    def trading(market: Market, buy: Callable, sell: Callable):
+        # 开盘前6分钟，判断急跌
+        node = market.fenBus.last()
+        if node.index < Var.tick_time:
             return
 
 
@@ -286,7 +314,7 @@ class Market:
     def __init__(self, symbol: str):
         self.dayBus = Bus(maxlen=120)  # 日线数据
         self.fenBus = Bus(maxlen=240)  # 分钟数据
-        self.tikBus = Bus(maxlen=600)  # tick数据
+        self.tikBus = Bus(maxlen=360)  # tick数据
         self.symbol = symbol  # 股票代码
         self.nowPos = None  # 当前持仓
         self.ctxMap = {}  # 上下文数据
@@ -295,30 +323,33 @@ class Market:
         if not bars:
             return self
         for bar in bars:
-            self.dayBus.add(Node().bar(bar))
+            self.dayBus.add(Node().new(bar))
             Line.Ema.calc(self.dayBus)
             Line.Macd.calc(self.dayBus)
         return self
 
     def running(self, pos, bar):
         self.nowPos = Bin.Pos(pos)
-        self.fenBus.add(Node().bar(bar))
+        self.fenBus.add(Node().new(bar))
         Line.Ema.calc(self.fenBus)
         Line.Macd.calc(self.fenBus)
         self.dayBus.rollback()
-        self.dayBus.add(Node().bar(bar, state=-1))
+        self.dayBus.add(Node().new(bar, state=-1))
         Line.Ema.calc(self.dayBus)
         Line.Macd.calc(self.dayBus)
-
-    def ticking(self, tik):
-        self.tikBus.add(Node().tik(tik))
-        Line.Ema.calc(self.tikBus)
-        Line.Macd.calc(self.tikBus)
 
     def trading(self, buy: Callable, sell: Callable):
         Broker.buy(self, buy)
         Broker.sell(self, sell)
         pass
+
+    def tick_running(self, tik):
+        self.tikBus.add(Node().add(tik))
+        Line.Ema.calc(self.tikBus)
+        Line.Macd.calc(self.tikBus)
+
+    def tick_trading(self, sell: Callable):
+        Broker.tick_trade(self, sell)
 
 
 ############################################################
@@ -399,11 +430,12 @@ def tick_data(context, data):
     if not is_trade():
         return
     cur_time = context.blotter.current_dt.strftime("%H:%M:%S")
-    if cur_time > '10:00:00':
+    if cur_time > Var.tick_time:
         return
     for symbol, market in Env.markets.items():
         tick = data[symbol]['tick'].iloc[0]
-        market.ticking(tick)
+        market.tick_running(tick)
+        market.tick_trading(order)
 
 
 def after_trading_end(context, data):
