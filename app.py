@@ -21,6 +21,7 @@ DISCLAIMER:
 from __future__ import annotations
 
 from collections import deque
+from datetime import time
 from types import SimpleNamespace
 from typing import Callable
 
@@ -29,14 +30,13 @@ import pandas as pd
 
 class Var:
     base_fund = 3200  # 交易基础金额（元）
-    tick_time = '09:36:00'  # tick时间（HH:MM:SS）
-    back_time = '14:55:00'  # 补仓买回时间（HH:MM:SS）
+    tick_time = time(9, 36, 0)  # tick时间
+    back_time = time(14, 55, 0)  # 补仓买回时间
 
     class Macd:
         fast = 12  # 快线周期
         slow = 26  # 慢线周期
         sign = 9  # 信号线周期
-        base = 5  # 基准周期
 
 
 class Bus:
@@ -62,6 +62,12 @@ class Bus:
 
 
 class Bin:
+    class Ctx:
+        def __init__(self):
+            self.has_buy = False
+            self.has_sell = False
+            self.base_price = 0.0
+
     class Bar:
         def __init__(self, bar):
             self.datetime = bar.datetime
@@ -82,6 +88,12 @@ class Bin:
             self.cost_price: float = getattr(pos, 'cost_basis', 0.0)  # 成本价格
             self.valuation: float = round(self.total_amount * self.last_price, 2)  # 市值
             self.principal: float = round(self.total_amount * self.cost_price, 2)  # 本金
+
+    class Avl:
+        def __init__(self):
+            self.volume: float = 0.0
+            self.money: float = 0.0
+            self.value: float = 0.0
 
     class Ema:
         def __init__(self):
@@ -104,31 +116,21 @@ class Bin:
 
     class Tick:
         def __init__(self, tick: pd.Series):
-            self.trade_status = 0.0  # 交易状态TRADE交易中
+            self.trade_status = ''  # 交易状态TRADE交易中
             self.hsTimeStamp = 0.0  # 时间戳，格式为YYYYMMDDHHMISS
-            self.trade_mins = 0.0  # 交易时间，距离开盘已过多少分钟
 
             self.amount = 0.0  # 持仓量
             self.business_amount = 0.0  # 成交数量
             self.business_amount_in = 0.0  # 内盘成交量
             self.business_amount_out = 0.0  # 外盘成交量
             self.business_balance = 0.0  # 成交金额
-            self.business_count = 0.0  # 成交笔数
-            self.current_amount = 0.0  # 最近成交量(现手)
 
-            self.up_px = 0.0  # 涨停价格
-            self.down_px = 0.0  # 跌停价格
-            self.preclose_px = 0.0  # 昨收价
+            self.preclose_px = 0.0  # 昨收盘价
+            self.wavg_px = 0.0  # 加权平均价
             self.open_px = 0.0  # 今开盘价
-            self.last_px = 0.0  # 最新成交价
+            self.last_px = 0.0  # 最新价
             self.high_px = 0.0  # 最高价
             self.low_px = 0.0  # 最低价
-            self.avg_px = 0.0  # 均价
-
-            self.turnover_ratio = 0.0  # 换手率
-            self.entrust_diff = 0.0  # 委差
-            self.entrust_rate = 0.0  # 委比
-            self.vol_ratio = 0.0  # 量比
 
             self.offer_grp = {}  # 卖档位
             self.bid_grp = {}  # 买档位
@@ -143,6 +145,7 @@ class Node:
         self.state: int = 0
         self.index: str = ''
         self.price: float = 0.0
+        self.avl: Bin.Avl = Bin.Avl()
         self.ema: Bin.Ema = Bin.Ema()
         self.macd: Bin.Macd = Bin.Macd()
         self.bar: Bin.Bar | None = None
@@ -158,12 +161,25 @@ class Node:
     def add(self, tick) -> Node:
         self.tick = Bin.Tick(tick)
         self.price = self.tick.last_px
-        datatime = pd.to_datetime(self.tick.hsTimeStamp, format="%Y%m%d%H%M%S")
-        self.index = datatime.strftime("%H:%M:%S")
+        self.index = pd.to_datetime(self.tick.hsTimeStamp, format="%Y%m%d%H%M%S").strftime("%H:%M:%S")
         return self
 
 
 class Line:
+    class Avl:
+        @staticmethod
+        def calc(bus: Bus):
+            node = bus.last()
+            avl = node.avl
+            if len(bus) == 1:
+                avl.volume = node.bar.volume
+                avl.money = node.bar.money
+            else:
+                prev_avl = bus.get(-2).avl
+                avl.volume = prev_avl.volume + node.bar.volume
+                avl.money = prev_avl.money + node.bar.money
+            avl.value = avl.volume / avl.money
+
     class Ema:
         @staticmethod
         def calc(bus: Bus):
@@ -224,7 +240,7 @@ class Line:
         def next(prev_macd: Bin.Macd, curr_macd: Bin.Macd, price: float):
             fast = Line.Ema.ema(prev_macd.fast, price, Var.Macd.fast)
             slow = Line.Ema.ema(prev_macd.slow, price, Var.Macd.slow)
-            ema_ = Line.Ema.ema(prev_macd.ema_, price, Var.Macd.base)
+            ema_ = Line.Ema.ema(prev_macd.ema_, price, 5)
             dif_ = round((fast - slow) / ema_ * 100, 4)
             dea_ = Line.Ema.ema(prev_macd.dea_, dif_, Var.Macd.sign)
             macd = round((dif_ - dea_) * 2, 4)
@@ -267,8 +283,20 @@ class Broker:
         return True
 
     @staticmethod
+    def unable_buy(market: Market) -> bool:
+        """是否不能买入"""
+        if market.ctxMap.has_buy:
+            return True
+        node = market.fenBus.last()
+        if node.avl.value < node.ema.ema05:
+            return True
+        return False
+
+    @staticmethod
     def unable_sell(market: Market) -> bool:
-        """当天是否执行卖出"""
+        """是否不能卖出"""
+        if market.ctxMap.has_sell:
+            return True
         pos = market.nowPos
         return pos.avail_amount * pos.last_price < 1000
 
@@ -283,31 +311,32 @@ class Broker:
             return
 
     @staticmethod
-    def tick_trade(market: Market, sell: Callable):
+    def tick_trading(market: Market, sell: Callable):
         if Broker.unable_sell(market): return
         if len(market.tikBus) == 0: return
         node = market.tikBus.last()
-        if node.ema.dif10 > 0: return
-        if node.ema.dif20 > 0: return
-        if node.ema.dif30 > 0: return
-        if node.macd.macd > 0: return
-        if node.macd.dif_ > 0: return
-        if node.macd.dea_ > 0: return
-        if node.macd.dif_ > node.macd.dea_: return
+        if node.macd.dif_ >= 0: return
+        if node.macd.dea_ >= 0: return
+        if node.macd.macd >= 0: return
+        if node.ema.ema05 >= node.ema.ema10: return
+        if node.ema.ema10 >= node.ema.ema20: return
+        if node.ema.ema20 >= node.ema.ema30: return
         # 开盘急跌
         tick = node.tick
-        fall = (tick.last_px - tick.open_px) / tick.preclose_px
+        fall = (node.ema.ema05 - tick.open_px) / tick.preclose_px
         if fall > -0.005: return
         # 卖出
         amount = Broker.sell_amount(market)
-        sell(market.symbol, -amount, limit_price=tick.last_px - 0.003)
+        sell(market.symbol, -amount, limit_price=tick.last_px - 0.005)
+        market.ctxMap.has_sell = True
+
+    @staticmethod
+    def back_trading(market: Market, buy: Callable):
+        pass
 
     @staticmethod
     def trading(market: Market, buy: Callable, sell: Callable):
-        # 开盘前6分钟，判断急跌
         node = market.fenBus.last()
-        if node.index < Var.tick_time:
-            return
 
 
 class Market:
@@ -317,7 +346,7 @@ class Market:
         self.tikBus = Bus(maxlen=360)  # tick数据
         self.symbol = symbol  # 股票代码
         self.nowPos = None  # 当前持仓
-        self.ctxMap = {}  # 上下文数据
+        self.ctxMap = Bin.Ctx()  # 上下文数据
 
     def prepare(self, bars: list):
         if not bars:
@@ -326,6 +355,7 @@ class Market:
             self.dayBus.add(Node().new(bar))
             Line.Ema.calc(self.dayBus)
             Line.Macd.calc(self.dayBus)
+        self.ctxMap.base_price = self.dayBus.last().bar.close
         return self
 
     def running(self, pos, bar):
@@ -338,18 +368,19 @@ class Market:
         Line.Ema.calc(self.dayBus)
         Line.Macd.calc(self.dayBus)
 
-    def trading(self, buy: Callable, sell: Callable):
-        Broker.buy(self, buy)
-        Broker.sell(self, sell)
-        pass
-
     def tick_running(self, tik):
         self.tikBus.add(Node().add(tik))
         Line.Ema.calc(self.tikBus)
         Line.Macd.calc(self.tikBus)
 
+    def trading(self, buy: Callable, sell: Callable):
+        Broker.trading(self, buy, sell)
+
     def tick_trading(self, sell: Callable):
-        Broker.tick_trade(self, sell)
+        Broker.tick_trading(self, sell)
+
+    def back_trading(self, buy: Callable):
+        Broker.back_trading(self, buy)
 
 
 ############################################################
@@ -407,7 +438,7 @@ def before_trading_start(context, data):
 
 def handle_data(context, data):
     """每个单位周期执行一次"""
-    cur_time = context.blotter.current_dt
+    cur_time = context.blotter.current_dt.time()
     if cur_time.minute % 5 == 0:
         Env.reload(context)
 
@@ -422,14 +453,17 @@ def handle_data(context, data):
         pos = positions.get(symbol)
         bar = data.get(symbol)
         market.running(pos, bar)
-        market.trading(order, order)
+        if Var.tick_time < cur_time < Var.back_time:
+            market.trading(order, order)
+        if cur_time >= Var.back_time:
+            market.back_trading(order)
 
 
 def tick_data(context, data):
     """每个tick执行一次"""
     if not is_trade():
         return
-    cur_time = context.blotter.current_dt.strftime("%H:%M:%S")
+    cur_time = context.blotter.current_dt.time
     if cur_time > Var.tick_time:
         return
     for symbol, market in Env.markets.items():
