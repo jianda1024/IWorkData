@@ -26,6 +26,54 @@ from types import SimpleNamespace
 from typing import Callable
 
 import pandas as pd
+import yaml
+
+# 你的 YAML 配置（多行字符串形式）
+tree_conf = """
+version: "1.0"
+name: "分时行情决策树"
+
+root:
+  name: "趋势判断"
+  field: "trend"
+  rules:
+    - operator: ">="
+      value: 0
+      next_node: "volume_check_up"
+    - operator: "default"
+      next_node: "volume_check_down"
+
+nodes:
+  volume_check_up:
+    name: "上涨趋势-量能检查"
+    field: "volume_ratio"
+    rules:
+      - operator: ">="
+        value: 1.5
+        action: "BUY"
+        action_params:
+          percent: 0.3
+          reason: "放量上涨"
+      - operator: "default"
+        action: "HOLD"
+        action_params:
+          reason: "量能不足"
+
+  volume_check_down:
+    name: "下跌趋势-量能检查"
+    field: "volume_ratio"
+    rules:
+      - operator: ">="
+        value: 1.5
+        action: "SELL"
+        action_params:
+          percent: 1.0
+          reason: "放量下跌"
+      - operator: "default"
+        action: "HOLD"
+        action_params:
+          reason: "缩量下跌"
+"""
 
 
 class Var:
@@ -52,19 +100,19 @@ class Bin:
             self.avail_amount: float = getattr(pos, 'enable_amount', 0.0)  # 可用持仓数量
             self.last_price: float = getattr(pos, 'last_sale_price', 0.0)  # 最新价格
             self.cost_price: float = getattr(pos, 'cost_basis', 0.0)  # 成本价格
-            self.valuation: float = round(self.total_amount * self.last_price, 2)  # 市值
-            self.principal: float = round(self.total_amount * self.cost_price, 2)  # 本金
+            self.valuation: float = round(self.total_amount * self.last_price, 3)  # 市值
+            self.principal: float = round(self.total_amount * self.cost_price, 3)  # 本金
 
     class Bar:
         def __init__(self, bar):
             self.datetime = bar.datetime
-            self.volume: float = round(bar.volume, 2)  # 交易量
-            self.money: float = round(bar.money, 2)  # 交易金额
-            self.price: float = round(bar.price, 5)  # 最新价
-            self.close: float = round(bar.close, 5)  # 收盘价
-            self.open: float = round(bar.open, 5)  # 开盘价
-            self.high: float = round(bar.high, 5)  # 最高价
-            self.low: float = round(bar.low, 5)  # 最低价
+            self.volume: float = round(bar.volume, 3)  # 交易量
+            self.money: float = round(bar.money, 3)  # 交易金额
+            self.price: float = round(bar.price, 3)  # 最新价
+            self.close: float = round(bar.close, 3)  # 收盘价
+            self.open: float = round(bar.open, 3)  # 开盘价
+            self.high: float = round(bar.high, 3)  # 最高价
+            self.low: float = round(bar.low, 3)  # 最低价
 
     class Tik:
         def __init__(self, tick: pd.Series):
@@ -153,7 +201,6 @@ class Node:
         self.avl = Box.Avl()
         self.ema = Box.Ema()
         self.macd = Box.Macd()
-
         self.state: int = 0
         self.tik: Bin.Tik | None = None
         self.bar: Bin.Bar | None = None if bar is None else Bin.Bar(bar)
@@ -175,6 +222,31 @@ class Node:
 
 
 ############################################################
+class Util:
+    @staticmethod
+    def get_field_value(obj, path):
+        val = obj
+        for key in path.split('.'):
+            if key.startswith('[') and key.endswith(']'):
+                val = val[int(key[1:-1])]
+            elif isinstance(val, dict):
+                val = val[key]
+            else:
+                val = getattr(val, key)
+        return val
+
+    @staticmethod
+    def do_compare(value, operator, target) -> bool:
+        if operator == '<': return value < target
+        if operator == '>': return value > target
+        if operator == '<=': return value <= target
+        if operator == '>=': return value >= target
+        if operator == '!=': return value != target
+        if operator == '==': return value == target
+        if operator == 'in': return target[0] <= value <= target[1]
+        return False
+
+
 class Line:
     class Avl:
         @staticmethod
@@ -262,39 +334,54 @@ class Line:
             curr_macd.macd = round((curr_macd.dif_ - curr_macd.dea_) * 2, 4)
 
 
+class Tree:
+    def __init__(self):
+        """决策树引擎"""
+        self.tree_conf = yaml.safe_load(tree_conf)
+        self.node_list = self.tree_conf.get('nodes', {})
+        self.root_node = self.tree_conf.get('root')
+        self.curr_node = self.root_node
+        self.path = [self.curr_node.get('name')]
+
+    def evaluate(self, market: Market) -> str | None:
+        """决策判断"""
+        branches = self.curr_node.get('branches', [])
+        if not branches: return None
+        for branch in branches:
+            conditions = self.curr_node.get('conditions', [])
+            is_success = Tree._check_conditions(market, conditions)
+            if not is_success: continue
+            next_node = branch.get('next_node')
+            if next_node is not None:
+                self._to_next(next_node)
+            return branch.get('action')
+        return None
+
+    def _to_next(self, node_name: str):
+        next_node = self.node_list.get(node_name)
+        if not next_node: return
+        self.curr_node = next_node
+        self.path.append(next_node.get('name'))
+
+    @staticmethod
+    def _check_conditions(market: Market, conditions: list[dict]) -> bool:
+        if not conditions: return True
+        for condition in conditions:
+            field = condition.get('field')
+            actor = condition.get('actor')
+            target = condition.get('value')
+            origin = Util.get_field_value(market, field)
+            if origin is None: return False
+            result = Util.do_compare(origin, actor, target)
+            if not result: return False
+        return True
+
+
+############################################################
 class Broker:
     @staticmethod
-    def buy_amount(market: Market) -> float:
-        """买入数量"""
-        amount = Var.base_fund / market.nowPos.last_price
-        return round(amount / 100) * 100
-
-    @staticmethod
-    def sell_amount(market: Market) -> float:
-        """卖出数量"""
-        pos = market.nowPos
-        base_amount = round(Var.base_fund / pos.last_price / 100) * 100
-        sell_amount = min(pos.avail_amount, base_amount)
-        if sell_amount < pos.total_amount:
-            return sell_amount
-        return sell_amount - 100
-
-    @staticmethod
-    def unable_buy(market: Market) -> bool:
-        """不能买"""
-        return market.status.has_buy
-
-    @staticmethod
-    def unable_sell(market: Market) -> bool:
-        """不能卖"""
-        if market.status.has_sell:
-            return True
-        pos = market.nowPos
-        return pos.avail_amount * pos.last_price < 500
-
-    @staticmethod
     def no_buy_day(market: Market) -> bool:
-        """今天不买"""
+        """今天不适合买入"""
         macd = market.dayBus.last().macd
         if macd.dif_ < 0 and macd.dea_ < 0 and macd.macd < 1:
             return True
@@ -306,6 +393,7 @@ class Broker:
 
     @staticmethod
     def no_fast_fall(node: Node) -> bool:
+        """不是快速下跌行情"""
         if node.macd.dif_ >= 0: return True
         if node.macd.dea_ >= 0: return True
         if node.macd.macd >= 0: return True
@@ -316,6 +404,7 @@ class Broker:
 
     @staticmethod
     def no_fast_rise(node: Node) -> bool:
+        """不是快速上涨行情"""
         if node.macd.dif_ <= 0: return True
         if node.macd.dea_ <= 0: return True
         if node.macd.macd <= 0: return True
@@ -324,10 +413,22 @@ class Broker:
         if node.ema.ema20 <= node.ema.ema30: return True
         return False
 
+    @staticmethod
+    def wave_pct(market: Market):
+        node = market.fenBus.last()
+        base_price = market.status.base_price
+        wave_pct = (node.ema.ema05 - base_price) / base_price * 100
+        return round(wave_pct, 2)
+
 
 class Trader:
-    @staticmethod
-    def tick_trading(market: Market, buy: Callable, sell: Callable):
+    def __init__(self, market: Market, buy: Callable, sell: Callable):
+        self.market = market
+        self.tree = Tree()
+        self.sell = sell
+        self.buy = buy
+
+    def tick_trading(self, market: Market):
         if len(market.tikBus) == 0: return
         node = market.tikBus.last()
         open_pct = (node.tik.open_px - node.tik.preclose_px) / node.tik.preclose_px * 100
@@ -335,30 +436,52 @@ class Trader:
         if open_pct > -2.5:
             # 开盘大于-2.5%，急跌 --> 卖出
             if wave_pct > -0.5: return
-            if market.status.has_buy: return
-            if Broker.unable_sell(market): return
             if Broker.no_fast_fall(node): return
-            amount = Broker.sell_amount(market)
-            sell(market.symbol, -amount, limit_price=node.tik.last_px - 0.003)
-            market.mark_sell()
+            self._do_sell(market)
         else:
             # 开盘小于-2.5%，急拉 --> 买入
             if wave_pct < 0.5: return
-            if market.status.has_sell: return
-            if Broker.no_buy_day(market): return
             if Broker.no_fast_rise(node): return
-            amount = Broker.buy_amount(market)
-            buy(market.symbol, amount, limit_price=node.tik.last_px + 0.003)
-            market.mark_buy()
+            self._do_buy(market)
 
-    @staticmethod
-    def back_trading(market: Market, buy: Callable):
+    def tail_trading(self, market: Market):
+        if market.status.has_buy:
+            self._do_sell(market)
+            return
+        if market.status.has_sell:
+            self._do_buy(market)
+            return
+
+    def midd_trading(self, market: Market):
+        if market.status.has_buy and market.status.has_sell: return
+        action = self.tree.evaluate(market)
+        if action == 'buy':
+            self._do_buy(market)
+            return
+        if action == 'sell':
+            self._do_sell(market)
+
+    def _do_buy(self, market: Market):
         if market.status.has_buy: return
-        pass
+        if Broker.no_buy_day(market): return
+        pos = market.nowPos
+        last_price = pos.last_price
+        buy_amount = round(Var.base_fund / last_price / 100) * 100
+        self.buy(market.symbol, buy_amount, limit_price=last_price + 0.003)
+        market.status.has_buy = True
+        market.status.buy_price = last_price
 
-    @staticmethod
-    def trading(market: Market, buy: Callable, sell: Callable):
-        node = market.fenBus.last()
+    def _do_sell(self, market: Market):
+        if market.status.has_sell: return
+        pos = market.nowPos
+        last_price = pos.last_price
+        if pos.avail_amount * pos.last_price < 500: return
+        base_amount = round(Var.base_fund / last_price / 100) * 100
+        able_amount = min(pos.avail_amount, base_amount)
+        sell_amount = able_amount - (0 if able_amount < pos.total_amount else 100)
+        self.sell(market.symbol, -sell_amount, limit_price=last_price - 0.003)
+        market.status.has_sell = True
+        market.status.sell_price = last_price
 
 
 ############################################################
@@ -367,8 +490,9 @@ class Status:
         self.has_buy = False
         self.has_sell = False
         self.base_price = 0.0
-        self.buy__price = 0.0
         self.sell_price = 0.0
+        self.buy_price = 0.0
+        self.open_pct = 0.0
 
 
 class Market:
@@ -380,7 +504,7 @@ class Market:
         self.nowPos = None  # 当前持仓
         self.status = Status()  # 上下文数据
 
-    def prepare(self, bars: list):
+    def prep(self, bars: list):
         if not bars:
             return self
         for bar in bars:
@@ -390,37 +514,26 @@ class Market:
         self.status.base_price = self.dayBus.last().bar.close
         return self
 
-    def running(self, pos, bar):
+    def next(self, pos, bar):
         self.nowPos = Bin.Pos(pos)
-        self.fenBus.add(Node(bar))
+        node = Node(bar)
+        self.fenBus.add(node)
         Line.Ema.calc(self.fenBus)
         Line.Macd.calc(self.fenBus)
         self.dayBus.rollback()
         self.dayBus.add(Node(bar).mark(-1))
         Line.Ema.calc(self.dayBus)
         Line.Macd.calc(self.dayBus)
+        if len(self.fenBus) == 1:
+            open_price = node.bar.open
+            base_price = self.status.base_price
+            self.status.open_pct = round((open_price - base_price) / base_price * 100, 2)
 
-    def trading(self, buy: Callable, sell: Callable):
-        Trader.trading(self, buy, sell)
-
-    def tick_running(self, tik):
+    def tick_next(self, pos, tik):
+        self.nowPos = Bin.Pos(pos)
         self.tikBus.add(Node().tick(tik))
         Line.Ema.calc(self.tikBus)
         Line.Macd.calc(self.tikBus)
-
-    def tick_trading(self, sell: Callable):
-        Trader.tick_trading(self, sell)
-
-    def back_trading(self, buy: Callable):
-        Trader.back_trading(self, buy)
-
-    def mark_buy(self):
-        self.status.has_buy = True
-        self.status.buy__price = self.nowPos.last_price
-
-    def mark_sell(self):
-        self.status.has_sell = True
-        self.status.sell_price = self.nowPos.last_price
 
 
 ############################################################
@@ -428,19 +541,19 @@ class Env:
     symbols: list[str] = ['000001.SS', '000852.SS']
     indexes: dict[str, Market] = {}
     markets: dict[str, Market] = {}
+    traders: dict[str, Trader] = {}
 
     @staticmethod
     def launch(context):
-        Env.indexes.clear()
-        Env.markets.clear()
+        Env.clear()
         positions = context.portfolio.positions
         pos_codes = list(positions.keys())
         all_codes = pos_codes + Env.symbols
         history = get_history(120, frequency='1d', security_list=all_codes)
         for code in Env.symbols:
-            Env.indexes[code] = Env._new_market(history, code)
+            Env.indexes[code] = Env.market(history, code)
         for code in pos_codes:
-            Env.markets[code] = Env._new_market(history, code)
+            Env.markets[code] = Env.market(history, code)
 
     @staticmethod
     def reload(context):
@@ -454,13 +567,27 @@ class Env:
             return
         history = get_history(120, frequency='1d', security_list=new_codes)
         for code in new_codes:
-            Env.markets[code] = Env._new_market(history, code)
+            Env.markets[code] = Env.market(history, code)
 
     @staticmethod
-    def _new_market(history, symbol):
+    def market(history, symbol):
         data = history.query(f'code in ["{symbol}"]')
         bars = [SimpleNamespace(datetime=idx, **row.to_dict()) for idx, row in data.iterrows()]
-        return Market(symbol).prepare(bars)
+        return Market(symbol).prep(bars)
+
+    @staticmethod
+    def trader(market: Market):
+        symbol = market.symbol
+        trader = Env.traders.get(symbol)
+        if trader is None:
+            Env.traders[symbol] = Trader(market, order, order)
+        return trader
+
+    @staticmethod
+    def clear():
+        Env.indexes.clear()
+        Env.markets.clear()
+        Env.traders.clear()
 
 
 ############################################################
@@ -479,24 +606,25 @@ def before_trading_start(context, data):
 def handle_data(context, data):
     """每个单位周期执行一次"""
     cur_time = context.blotter.current_dt.time()
-    if cur_time.minute % 5 == 0:
-        Env.reload(context)
-
     history = get_history(1, frequency='1m', security_list=Env.symbols)
     for symbol, market in Env.indexes.items():
         data = history.query(f'code in ["{symbol}"]')
         bars = [SimpleNamespace(datetime=idx, **row.to_dict()) for idx, row in data.iterrows()]
-        market.running(None, bars[-1])
+        market.next(None, bars[-1])
 
     positions = context.portfolio.positions
     for symbol, market in Env.markets.items():
         pos = positions.get(symbol)
         bar = data.get(symbol)
-        market.running(pos, bar)
+        market.next(pos, bar)
+        trader = Env.trader(market)
         if Var.tick_time < cur_time < Var.back_time:
-            market.trading(order, order)
+            trader.midd_trading(market)
         if cur_time >= Var.back_time:
-            market.back_trading(order)
+            trader.tail_trading(market)
+
+    # 加载持仓
+    Env.reload(context)
 
 
 def tick_data(context, data):
@@ -506,13 +634,16 @@ def tick_data(context, data):
     cur_time = context.blotter.current_dt.time
     if cur_time > Var.tick_time:
         return
+    positions = context.portfolio.positions
     for symbol, market in Env.markets.items():
+        pos = positions.get(symbol)
         tick = data[symbol]['tick'].iloc[0]
-        market.tick_running(tick)
-        market.tick_trading(order)
+        market.tick_next(pos, tick)
+        trader = Env.trader(market)
+        trader.tick_trading(market)
 
 
 def after_trading_end(context, data):
     """每天交易结束之后执行一次"""
-    Env.markets.clear()
+    Env.clear()
     pass
