@@ -141,27 +141,12 @@ class Bin:
 
 
 class Box:
-    class Avl:
-        def __init__(self):
-            self.volume: float = 0.0
-            self.money: float = 0.0
-            self.value: float = 0.0
-
     class Ema:
         def __init__(self):
             self.ema05: float = 0.0
             self.ema10: float = 0.0
             self.ema20: float = 0.0
             self.ema30: float = 0.0
-            self.dif10: float = 0.0
-            self.dif20: float = 0.0
-            self.dif30: float = 0.0
-
-    class Mava:
-        def __init__(self):
-            self.volume: float = 0.0
-            self.money: float = 0.0
-            self.value: float = 0.0
 
     class Macd:
         def __init__(self):
@@ -171,6 +156,12 @@ class Box:
             self.dif_: float = 0.0
             self.dea_: float = 0.0
             self.macd: float = 0.0
+
+    class Vwap:
+        def __init__(self):
+            self.volume: float = 0.0
+            self.money: float = 0.0
+            self.value: float = 0.0
 
 
 class Bus:
@@ -198,9 +189,9 @@ class Bus:
 
 class Node:
     def __init__(self, bar=None):
-        self.avl = Box.Avl()
         self.ema = Box.Ema()
         self.macd = Box.Macd()
+        self.vwap = Box.Vwap()
         self.state: int = 0
         self.tik: Bin.Tik | None = None
         self.bar: Bin.Bar | None = None if bar is None else Bin.Bar(bar)
@@ -248,20 +239,6 @@ class Util:
 
 
 class Line:
-    class Avl:
-        @staticmethod
-        def calc(bus: Bus):
-            node = bus.last()
-            avl = node.avl
-            if len(bus) == 1:
-                avl.volume = node.bar.volume
-                avl.money = node.bar.money
-            else:
-                prev_avl = bus.get(-2).avl
-                avl.volume = prev_avl.volume + node.bar.volume
-                avl.money = prev_avl.money + node.bar.money
-            avl.value = avl.volume / avl.money
-
     class Ema:
         @staticmethod
         def calc(bus: Bus):
@@ -279,10 +256,6 @@ class Line:
             curr_ema.ema10 = price
             curr_ema.ema20 = price
             curr_ema.ema30 = price
-            curr_ema.ema60 = price
-            curr_ema.dif10 = 0.0
-            curr_ema.dif20 = 0.0
-            curr_ema.dif30 = 0.0
 
         @staticmethod
         def next(bus: Bus, node: Node, price: float):
@@ -292,9 +265,6 @@ class Line:
             curr_ema.ema10 = Line.Ema.ema(prev_ema.ema10, price, 10)
             curr_ema.ema20 = Line.Ema.ema(prev_ema.ema20, price, 20)
             curr_ema.ema30 = Line.Ema.ema(prev_ema.ema30, price, 30)
-            curr_ema.dif10 = round((curr_ema.ema05 - curr_ema.ema10) / curr_ema.ema05 * 100, 3)
-            curr_ema.dif20 = round((curr_ema.ema05 - curr_ema.ema20) / curr_ema.ema05 * 100, 3)
-            curr_ema.dif30 = round((curr_ema.ema05 - curr_ema.ema30) / curr_ema.ema05 * 100, 3)
 
         @staticmethod
         def ema(prev_val: float, price: float, period: int):
@@ -332,6 +302,20 @@ class Line:
             curr_macd.dif_ = round((curr_macd.fast - curr_macd.slow) / curr_macd.ema_ * 100, 4)
             curr_macd.dea_ = Line.Ema.ema(prev_macd.dea_, curr_macd.dif_, bus.conf.macd_sign)
             curr_macd.macd = round((curr_macd.dif_ - curr_macd.dea_) * 2, 4)
+
+    class Vwap:
+        @staticmethod
+        def calc(bus: Bus):
+            node = bus.last()
+            vwap = node.vwap
+            if len(bus) == 1:
+                vwap.volume = node.bar.volume
+                vwap.money = node.bar.money
+            else:
+                prev_vwap = bus.get(-2).vwap
+                vwap.volume = prev_vwap.volume + node.bar.volume
+                vwap.money = prev_vwap.money + node.bar.money
+            vwap.value = round(vwap.volume / vwap.money, 4)
 
 
 class Tree:
@@ -380,9 +364,9 @@ class Tree:
 ############################################################
 class Broker:
     @staticmethod
-    def no_buy_day(market: Market) -> bool:
-        """今天不适合买入"""
-        macd = market.dayBus.last().macd
+    def can_not_buy(bus: Bus) -> bool:
+        """不能买"""
+        macd = bus.last().macd
         if macd.dif_ < 0 and macd.dea_ < 0 and macd.macd < 1:
             return True
         if macd.dif_ > 2 and macd.dea_ > 2 and macd.macd > -2:
@@ -392,33 +376,18 @@ class Broker:
         return False
 
     @staticmethod
-    def no_fast_fall(node: Node) -> bool:
-        """不是快速下跌行情"""
-        if node.macd.dif_ >= 0: return True
-        if node.macd.dea_ >= 0: return True
-        if node.macd.macd >= 0: return True
-        if node.ema.ema05 >= node.ema.ema10: return True
-        if node.ema.ema10 >= node.ema.ema20: return True
-        if node.ema.ema20 >= node.ema.ema30: return True
-        return False
+    def ema_trend(ema: Box.Ema) -> str:
+        """EMA趋势"""
+        if ema.ema05 < ema.ema10 < ema.ema20 < ema.ema30: return 'fall'
+        if ema.ema05 > ema.ema10 > ema.ema20 > ema.ema30: return 'rise'
+        return 'flat'
 
     @staticmethod
-    def no_fast_rise(node: Node) -> bool:
-        """不是快速上涨行情"""
-        if node.macd.dif_ <= 0: return True
-        if node.macd.dea_ <= 0: return True
-        if node.macd.macd <= 0: return True
-        if node.ema.ema05 <= node.ema.ema10: return True
-        if node.ema.ema10 <= node.ema.ema20: return True
-        if node.ema.ema20 <= node.ema.ema30: return True
-        return False
-
-    @staticmethod
-    def wave_pct(market: Market):
-        node = market.fenBus.last()
-        base_price = market.status.base_price
-        wave_pct = (node.ema.ema05 - base_price) / base_price * 100
-        return round(wave_pct, 2)
+    def macd_trend(macd: Box.Macd):
+        """MACD趋势"""
+        if macd.dif_ < 0 and macd.dea_ < 0 and macd.macd < 0: return 'fall'
+        if macd.dif_ > 0 and macd.dea_ > 0 and macd.macd > 0: return 'rise'
+        return 'flat'
 
 
 class Trader:
@@ -436,12 +405,14 @@ class Trader:
         if open_pct > -2.5:
             # 开盘大于-2.5%，急跌 --> 卖出
             if wave_pct > -0.5: return
-            if Broker.no_fast_fall(node): return
+            if Broker.ema_trend(node.ema) != 'fall': return
+            if Broker.macd_trend(node.macd) != 'fall': return
             self._do_sell(market)
         else:
             # 开盘小于-2.5%，急拉 --> 买入
             if wave_pct < 0.5: return
-            if Broker.no_fast_rise(node): return
+            if Broker.ema_trend(node.ema) != 'rise': return
+            if Broker.macd_trend(node.macd) != 'rise': return
             self._do_buy(market)
 
     def tail_trading(self, market: Market):
@@ -463,7 +434,7 @@ class Trader:
 
     def _do_buy(self, market: Market):
         if market.status.has_buy: return
-        if Broker.no_buy_day(market): return
+        if market.status.can_not_buy: return
         pos = market.nowPos
         last_price = pos.last_price
         buy_amount = round(Var.base_fund / last_price / 100) * 100
@@ -487,12 +458,32 @@ class Trader:
 ############################################################
 class Status:
     def __init__(self):
-        self.has_buy = False
-        self.has_sell = False
-        self.base_price = 0.0
-        self.sell_price = 0.0
-        self.buy_price = 0.0
-        self.open_pct = 0.0
+        self.has_buy = False  # 是否已经买入
+        self.has_sell = False  # 是否已经卖出
+        self.buy_price = 0.0  # 买入时的价格
+        self.sell_price = 0.0  # 卖出时的价格
+
+        self.base_price = 0.0  # 基准价格（昨日收盘价）
+        self.open_price = 0.0  # 开盘价格
+        self.curr_price = 0.0  # 最新价格
+
+        self.open_pct = 0.0  # 开盘价（%）
+        self.curr_pct = 0.0  # 最新价（%）
+        self.wave_pct = 0.0  # 波动价（%）
+
+        self.vwap_diff = 0.0  # VWAP与MA的差值
+        self.ema_trend = 'flat'  # EMA 趋势
+        self.macd_trend = 'flat'  # MACD 趋势
+        self.can_not_buy = False  # 是否不能买入
+
+    def update(self, market: Market):
+        self.curr_pct = round((self.curr_price - self.base_price) / self.base_price * 100, 2)
+        self.wave_pct = round((self.curr_price - self.open_price) / self.base_price * 100, 2)
+        node = market.fenBus.last()
+        self.vwap_diff = node.ema.ema05 - node.vwap.value
+        self.ema_trend = Broker.ema_trend(node.ema)
+        self.macd_trend = Broker.macd_trend(node.macd)
+        self.can_not_buy = Broker.can_not_buy(market.dayBus)
 
 
 class Market:
@@ -509,25 +500,31 @@ class Market:
             return self
         for bar in bars:
             self.dayBus.add(Node(bar))
-            Line.Ema.calc(self.dayBus)
             Line.Macd.calc(self.dayBus)
         self.status.base_price = self.dayBus.last().bar.close
+        self.status.can_not_buy = Broker.can_not_buy(self.dayBus)
         return self
 
     def next(self, pos, bar):
-        self.nowPos = Bin.Pos(pos)
+        # 分钟数据
         node = Node(bar)
         self.fenBus.add(node)
         Line.Ema.calc(self.fenBus)
         Line.Macd.calc(self.fenBus)
+        Line.Vwap.calc(self.fenBus)
+        # 日线数据
         self.dayBus.rollback()
         self.dayBus.add(Node(bar).mark(-1))
-        Line.Ema.calc(self.dayBus)
         Line.Macd.calc(self.dayBus)
+
+        # 状态数据
         if len(self.fenBus) == 1:
-            open_price = node.bar.open
+            self.status.open_price = node.bar.open
             base_price = self.status.base_price
-            self.status.open_pct = round((open_price - base_price) / base_price * 100, 2)
+            self.status.open_pct = round((node.bar.open - base_price) / base_price * 100, 2)
+        self.nowPos = Bin.Pos(pos)
+        self.status.last_price = self.nowPos.last_price
+        self.status.update(self)
 
     def tick_next(self, pos, tik):
         self.nowPos = Bin.Pos(pos)

@@ -1,0 +1,40 @@
+version: "1.0"
+name: "决策树"
+
+root:
+  name: "N0"
+  branches:
+    - conditions:
+        - field: "status.open_pct"
+          actor: "between"
+          value: [4, 10]
+      next_node: "N01"
+    - conditions:
+        - field: "status.open_pct"
+          actor: "between"
+          value: [2, 4]
+      next_node: "N02"
+    - conditions:
+        - field: "status.open_pct"
+          actor: "between"
+          value: [-2, 2]
+      next_node: "N03"
+    - conditions:
+        - field: "status.open_pct"
+          actor: "between"
+          value: [-4, -2]
+      next_node: "N04"
+    - conditions:
+        - field: "status.open_pct"
+          actor: "between"
+          value: [-10, -4]
+      next_node: "N05"
+
+nodes:
+  N01:
+    name: "N01"
+    branches:
+      - conditions:
+          - field: "open_pct"
+            actor: "between"
+            value: [-10, -4]
