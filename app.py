@@ -20,19 +20,16 @@ DISCLAIMER:
 """
 from __future__ import annotations
 
-from collections import deque
-from datetime import time
 from types import SimpleNamespace
-from typing import Callable
+from typing import Callable, Any
 
 
 class Var:
     base_fund = 3000  # 交易基础金额（元）
-    open_data_time = time(9, 35, 0)  # 开盘急涨急跌，收集数据时间（09:30~09:35）
-    open_eval_time = time(9, 36, 0)  # 开盘急涨急跌，判断评估时间（09:39）
-    head_data_time = time(9, 50, 0)  # 开盘定调收集数据时间（09:30~09:50）
-    main_eval_time = time(14, 30, 0)  # 盘中操作时间（09:50~14:30）
-    tail_eval_time = time(14, 55, 0)  # 尾盘平仓时间：14:55 平掉所有T仓，回归底仓
+    open_trade_time = "09:35:00"  # 开盘静默时间（09:30 ~ 09:35）
+    head_trade_time = "09:45:00"  # 开盘静默时间（09:35 ~ 09:45）
+    main_trade_time = "14:30:00"  # 盘中交易时间（09:35 ~ 14:30）
+    tail_trade_time = "14:55:00"  # 尾盘平仓时间（14:55 ~ 15:00）
 
     fen = {
         "macd_fast": 13,
@@ -40,20 +37,6 @@ class Var:
         "macd_sign": 5,
     }
 
-    rise_safe_lvls = {
-        9.0: 1.080,
-        8.0: 1.070,
-        7.0: 1.060,
-        6.0: 1.050,
-        5.0: 1.040,
-        4.0: 1.032,
-        3.5: 1.025,
-        3.0: 1.020,
-        2.5: 1.015,
-        2.0: 1.010,
-        1.5: 1.005,
-        1.0: 1.000,
-    }
     fall_safe_lvls = {
         9.0: 0.920,
         8.0: 0.930,
@@ -71,6 +54,27 @@ class Var:
 
 
 class Bin:
+    class Act:
+        def __init__(self):
+            self.has_buy = False  # 是否已经买入
+            self.has_sell = False  # 是否已经卖出
+            self.buy_price = 0.0  # 买入时的价格
+            self.sell_price = 0.0  # 卖出时的价格
+            self.buy_amount = 0.0  # 买入时的数量
+            self.sell_amount = 0.0  # 卖出时的数量
+            self.safe_rise_price = 0.0  # 正T风控价格
+            self.safe_fall_price = 1000  # 反T风控价格
+
+    class Agg:
+        def __init__(self):
+            self.avg_vol_list = []
+            self.avg_vol = 0.0  # 前20日，每天前X分钟，成交量和的平均值
+            self.sum_vol = 0.0  # 今日，前X分钟，成交量之和
+            self.orb_low = 100  # 开盘区间内的最低价
+            self.orb_high = 0.0  # 开盘区间内的最高价
+            self.orb_mid_low = 0.0  # ORL+(ORH-ORL)*0.3
+            self.orb_mid_high = 0.0  # ORL+(ORH-ORL)*0.7
+
     class Pos:
         def __init__(self, pos):
             self.symbol: str = getattr(pos, 'sid', '')  # 股票代码
@@ -94,12 +98,22 @@ class Bin:
 
 
 class Box:
-    class Vma:
+    class Orb:
         def __init__(self):
-            """成交量加权平均价格"""
-            self.volume: float = 0.0
-            self.money: float = 0.0
-            self.value: float = 0.0
+            self.orb_low: float = 0.0  # 开盘区间内的最低价
+            self.orb_high: float = 0.0  # 开盘区间内的最高价
+
+    class Vwa:
+        def __init__(self):
+            self.sum_volume: float = 0.0  # 成交量总和
+            self.sum_money: float = 0.0  # 成交额总和
+            self.avg_price: float = 0.0  # 成交量加权平均价格
+
+            self.sum_bar: int = 0  # bar总和
+            self.sum_yan: int = 0  # 阳线总和
+            self.sum_yin: int = 0  # 阴线总和
+            self.sum_yan_vol: float = 0.0  # 阳线成交量总和
+            self.sum_yin_vol: float = 0.0  # 阴线成交量总和
 
     class Ema:
         def __init__(self):
@@ -116,62 +130,55 @@ class Box:
             self.dea_: float = 0.0
             self.macd: float = 0.0
 
+    class Node:
+        def __init__(self, bar):
+            self.time: str = bar.datetime.strftime("%H:%M:%S")
+            self.flag: int = 0
+            self.bar = Bin.Bar(bar)
+            self.ema = None
+            self.macd = None
 
-class Bus:
-    def __init__(self, maxlen=None, conf=None):
-        if conf is None: conf = {}
-        self.data: deque[Node] = deque(maxlen=maxlen)
-        self.conf = conf
-
-    def __len__(self):
-        return len(self.data)
-
-    def add(self, node: Node):
-        self.data.append(node)
-
-    def get(self, idx: int) -> Node:
-        return self.data[idx]
-
-    def last(self) -> Node:
-        return self.data[-1]
-
-    def rollback(self):
-        node = self.data.pop()
-        if node.flag >= 0:
-            self.data.append(node)
+        def mark(self, flag):
+            self.flag = flag
+            return self
 
 
-class Node:
-    def __init__(self, bar):
-        self.time: str = bar.datetime.strftime("%H:%M:%S")
-        self.flag: int = 0
-
-        self.bar = Bin.Bar(bar)
-        self.vma = None
-        self.ema = None
-        self.macd = None
-
-    def mark(self, flag):
-        self.flag = flag
-        return self
-
-
-############################################################
 class Line:
-    class Vma:
+    class Orb:
         @staticmethod
-        def calc(bus: Bus):
-            vma = Box.Vma()
+        def calc(bus):
             node = bus.last()
-            node.vma = vma
+            price = node.bar.close
+            node.orb = orb = Box.Orb()
             if len(bus) == 1:
-                vma.money = node.bar.money
-                vma.volume = node.bar.volume
+                orb.orb_low = price
+                orb.orb_high = price
             else:
-                prev_vma = bus.get(-2).vma
-                vma.money = prev_vma.money + node.bar.money
-                vma.volume = prev_vma.volume + node.bar.volume
-            vma.value = round(vma.money / vma.volume / 100, 4)
+                prev_orb = bus.get(-2).orb
+                orb.orb_low = min(prev_orb.orb_low, price)
+                orb.orb_high = max(prev_orb.orb_high, price)
+
+    class Vwa:
+        @staticmethod
+        def calc(bus):
+            node = bus.last()
+            node.vwa = vwa = Box.Vwa()
+            if len(bus) == 1:
+                prev_money = prev_volume = 0
+            else:
+                prev_vwa = bus.get(-2).vwa
+                prev_money, prev_volume = prev_vwa.sum_money, prev_vwa.sum_volume
+            bar = node.bar
+            vwa.sum_volume = prev_volume + bar.volume
+            vwa.sum_money = prev_money + bar.money
+            vwa.avg_price = round(vwa.sum_money / vwa.sum_volume / 100, 4)
+            vwa.sum_bar += 1
+            if bar.close >= bar.open:
+                vwa.sum_yan += 1
+                vwa.sum_yan_vol += bar.volume
+            else:
+                vwa.sum_yin += 1
+                vwa.sum_yin_vol += bar.volume
 
     class Ema:
         @staticmethod
@@ -185,7 +192,7 @@ class Line:
                 Line.Ema.next(bus, node, price)
 
         @staticmethod
-        def first(node: Node, price: float):
+        def first(node: Box.Node, price: float):
             curr_ema = node.ema
             curr_ema.ema05 = price
             curr_ema.ema10 = price
@@ -193,7 +200,7 @@ class Line:
             curr_ema.ema30 = price
 
         @staticmethod
-        def next(bus: Bus, node: Node, price: float):
+        def next(bus: Bus, node: Box.Node, price: float):
             curr_ema = node.ema
             prev_ema = bus.get(-2).ema
             curr_ema.ema05 = Line.Ema.ema(prev_ema.ema05, price, 5)
@@ -219,7 +226,7 @@ class Line:
                 Line.Macd._next(bus, node, price)
 
         @staticmethod
-        def _first(node: Node, price: float):
+        def _first(node: Box.Node, price: float):
             curr_macd = node.macd
             curr_macd.fast = price
             curr_macd.slow = price
@@ -229,11 +236,11 @@ class Line:
             curr_macd.macd = 0.0
 
         @staticmethod
-        def _next(bus: Bus, node: Node, price: float):
+        def _next(bus: Bus, node: Box.Node, price: float):
             curr_macd = node.macd
             prev_node = bus.get(-2)
             prev_macd = prev_node.macd
-            base_price = bus.conf.get('base_price', node.ema.ema05)
+            base_price = bus.conf.get('base_price', node.ema.ema20)
             curr_macd.fast = Line.Ema.ema(prev_macd.fast, price, bus.conf.get('macd_fast', 12))
             curr_macd.slow = Line.Ema.ema(prev_macd.slow, price, bus.conf.get('macd_slow', 26))
             curr_macd.dif_ = round((curr_macd.fast - curr_macd.slow) / base_price * 100, 5)
@@ -241,412 +248,343 @@ class Line:
             curr_macd.macd = round((curr_macd.dif_ - curr_macd.dea_) * 2, 4)
 
 
-class Flow:
-    class Step:
+class Step:
+    class Start:
         @staticmethod
         def eval(ctx: Ctx):
-            cur_time = ctx.node.bar.datetime.time()
-            if cur_time <= Var.head_data_time:
-                return Flow.HeadStep.eval(ctx)
-            return Flow.MainStep.eval(ctx)
-
-    class HeadStep(Step):
-        @staticmethod
-        def eval(ctx: Ctx):
-            if ctx.sum_volume < 1.3 * ctx.sum_vol_05: return None, None
-            if Flow.HeadStep._check_sell(ctx): return "sell", "SellStep"
-            if Flow.HeadStep._check_buy(ctx): return "buy", "BuyStep"
-            return None, None
+            if Step.Start.branch_sell(ctx):
+                return "Sell", "SellStep"
+            if ctx.node.time <= Var.head_trade_time:
+                return "Hold", "Wait"
+            if ctx.fall_score >= 70:
+                return "Sell", "SellStep"
+            return "Hold", "Wait"
 
         @staticmethod
-        def _check_sell(ctx: Ctx) -> bool:
+        def branch_sell(ctx: Ctx) -> bool:
+            vwa = ctx.node.vwa
             if not ctx.is_allow_sell: return False
-            if ctx.wave_pct >= -0.5: return False
-            if ctx.ema_trend != 'fall': return False
-            if ctx.macd_trend != 'fall': return False
-            if ctx.node.ema.ema05 >= ctx.node.vma.value: return False
+            if ctx.curr_price >= ctx.agg.orb_low: return False
+            if ctx.curr_price >= vwa.avg_price: return False
+            if ctx.agg.sum_vol <= 0.8 * ctx.agg.avg_vol: return False
+            if ctx.comp_price_pct > -0.4: return False
+            if vwa.sum_yin < 1.2 * vwa.sum_yan: return False
+            if vwa.sum_yin_vol < 1.2 * vwa.sum_yan_vol: return False
             return True
 
+    class Sell:
         @staticmethod
-        def _check_buy(ctx: Ctx) -> bool:
+        def eval(ctx: Ctx):
+            if Step.Sell.branch_01(ctx): return "Buy", "EndStep"
+            return "Hold", "Wait"
+
+        @staticmethod
+        def branch_01(ctx: Ctx) -> bool:
             if not ctx.is_allow_buy: return False
-            if ctx.wave_pct <= 0.5: return False
-            if ctx.ema_trend != 'rise': return False
-            if ctx.macd_trend != 'rise': return False
-            if ctx.node.ema.ema05 <= ctx.node.vma.value: return False
+            if ctx.node.ema.ema05 < ctx.act.safe_fall_price: return False
+            if ctx.ema_state == 'fall': return False
+            if ctx.macd_state == 'fall': return False
             return True
 
-    class MainStep(Step):
+    class End:
         @staticmethod
-        def eval(ctx: Ctx):
-            if ctx.sum_volume < 1.25 * ctx.sum_vol_20:
-                if Flow.MainStep._check_lower_sell_01(ctx): return "sell", "SellStep"
-                if Flow.MainStep._check_lower_sell_02(ctx): return "sell", "SellStep"
-                if Flow.MainStep._check_lower_buy(ctx): return "buy", "BuyStep"
-                return None, None
-            if ctx.sum_volume >= 1.25 * ctx.sum_vol_20:
-                if Flow.MainStep._check_upper_sell(ctx): return "sell", "SellStep"
-                if Flow.MainStep._check_upper_buy(ctx): return "buy", "BuyStep"
-            return None, None
-
-        @staticmethod
-        def _check_lower_sell_01(ctx: Ctx) -> bool:
-            if not ctx.is_allow_sell: return False
-            if ctx.curr_pct <= 1: return False
-            if ctx.node.ema.ema05 >= ctx.orb_low: return False
-            if ctx.node.ema.ema05 >= ctx.node.vma.value: return False
-            if ctx.ema_trend != 'fall': return False
-            if ctx.macd_trend != 'fall': return False
-            return True
-
-        @staticmethod
-        def _check_lower_sell_02(ctx: Ctx) -> bool:
-            if not ctx.is_allow_sell: return False
-            if ctx.node.ema.ema05 >= ctx.node.vma.value: return False
-            if ctx.node.ema.ema05 >= ctx.orb_low: return False
-            if ctx.wave_pct >= -0.5: return False
-            if ctx.ema_trend != 'fall': return False
-            if ctx.macd_trend != 'fall': return False
-            return True
-
-        @staticmethod
-        def _check_lower_buy(ctx: Ctx) -> bool:
-            if not ctx.is_allow_buy: return False
-            if ctx.node.ema.ema05 <= ctx.node.vma.value: return False
-            if ctx.node.ema.ema05 <= ctx.orb_high: return False
-            if ctx.wave_pct <= 0.5: return False
-            if ctx.ema_trend != 'rise': return False
-            if ctx.macd_trend != 'rise': return False
-            return True
-
-        @staticmethod
-        def _check_upper_sell(ctx: Ctx) -> bool:
-            if not ctx.is_allow_sell: return False
-            if ctx.node.ema.ema05 >= ctx.node.vma.value: return False
-            if ctx.node.ema.ema05 >= ctx.orb_low: return False
-            if ctx.ema_trend != 'fall': return False
-            if ctx.macd_trend != 'fall': return False
-            return True
-
-        @staticmethod
-        def _check_upper_buy(ctx: Ctx) -> bool:
-            if not ctx.is_allow_buy: return False
-            if ctx.node.ema.ema05 <= ctx.orb_high: return False
-            if ctx.node.ema.ema05 <= ctx.node.vma.value: return False
-            if ctx.ema_trend != 'rise': return False
-            if ctx.macd_trend != 'rise': return False
-            return True
-
-    class SellStep(Step):
-        @staticmethod
-        def eval(ctx: Ctx):
-            if Flow.SellStep._check_buy_back_01(ctx): return "buy", "EndStep"
-            if Flow.SellStep._check_buy_back_02(ctx): return "buy", "EndStep"
-            return None, None
-
-        @staticmethod
-        def _check_buy_back_01(ctx: Ctx) -> bool:
-            if not ctx.is_allow_buy: return False
-            if ctx.ema_trend == 'fall': return False
-            if ctx.macd_trend == 'fall': return False
-            if ctx.node.ema.ema05 <= ctx.orb_high: return False
-            if ctx.node.ema.ema05 <= ctx.node.vma.value: return False
-            return True
-
-        @staticmethod
-        def _check_buy_back_02(ctx: Ctx) -> bool:
-            if not ctx.is_allow_buy: return False
-            if ctx.ema_trend == 'fall': return False
-            if ctx.macd_trend == 'fall': return False
-            if ctx.node.ema.ema05 <= ctx.keep_fall_price: return False
-            return True
-
-    class BuyStep(Step):
-        @staticmethod
-        def eval(ctx: Ctx):
-            if Flow.BuyStep._check_sell_out_01(ctx): return "sell", "EndStep"
-            if Flow.BuyStep._check_sell_out_02(ctx): return "sell", "EndStep"
-            return None, None
-
-        @staticmethod
-        def _check_sell_out_01(ctx: Ctx) -> bool:
-            if not ctx.is_allow_sell: return False
-            if ctx.ema_trend == 'rise': return False
-            if ctx.macd_trend == 'rise': return False
-            if ctx.node.ema.ema05 >= ctx.orb_low: return False
-            if ctx.node.ema.ema05 >= ctx.node.vma.value: return False
-            return True
-
-        @staticmethod
-        def _check_sell_out_02(ctx: Ctx) -> bool:
-            if not ctx.is_allow_sell: return False
-            if ctx.ema_trend == 'rise': return False
-            if ctx.macd_trend == 'rise': return False
-            if ctx.node.ema.ema05 >= ctx.keep_rise_price: return False
-            return True
-
-    class EndStep(Step):
-        @staticmethod
-        def eval(ctx: Ctx):
-            return None, None
+        def eval():
+            return "Hold", "Wait"
 
 
+############################################################
 class Rule:
     @staticmethod
-    def ema_trend(ema: Box.Ema) -> str:
-        """EMA趋势"""
-        if ema.ema05 < ema.ema10 < ema.ema20 < ema.ema30: return 'fall'
-        if ema.ema05 > ema.ema10 > ema.ema20 > ema.ema30: return 'rise'
+    def is_keep_pos(ctx: Ctx) -> bool:
+        """是否已经有持仓"""
+        return ctx.pos.valuation > 500
+
+    @staticmethod
+    def is_allow_buy(market: Market) -> bool:
+        """是否允许买入"""
+        ctx = market.ctx
+        day = market.dayBus.last()
+        if ctx.act.has_buy: return False
+        if day.ema.ema05 > day.ema.ema10 > day.ema.ema20:
+            return True
+        if day.ema.ema05 < day.ema.ema10 < day.ema.ema20:
+            return False
+        if day.macd.dif_ > 0:
+            if day.macd.macd > 0: return True
+            if day.macd.macd < -0.5: return False
+            if (ctx.node.ema.ema20 - day.ema.ema20) / day.ema.ema20 * 100 > -0.5: return True
+        if day.macd.dif_ <= 0:
+            if day.macd.macd <= 0: return False
+            if ctx.node.ema.ema20 - day.ema.ema20 > 0: return True
+            if day.macd.macd > 1: return True
+        return False
+
+    @staticmethod
+    def is_allow_sell(market: Market) -> bool:
+        """是否允许卖出"""
+        ctx = market.ctx
+        if ctx.act.has_sell: return False
+        return ctx.pos.avail_amount * ctx.pos.curr_price > 500
+
+    @staticmethod
+    def ema_state(ctx: Ctx) -> str:
+        ema = ctx.node.ema
+        if ema.ema05 < ema.ema10 < ema.ema20: return 'fall'
+        if ema.ema05 > ema.ema10 > ema.ema20: return 'rise'
         return 'flat'
 
     @staticmethod
-    def macd_trend(macd: Box.Macd):
-        """MACD趋势"""
+    def macd_state(ctx: Ctx) -> str:
+        macd = ctx.node.macd
         if macd.dif_ < 0 and macd.dea_ < 0: return 'fall'
         if macd.dif_ > 0 and macd.dea_ > 0: return 'rise'
         return 'flat'
 
     @staticmethod
-    def is_allow_buy(market: Market) -> bool:
-        """允许买入"""
-        if market.ctx.has_buy: return False
-        return market.dayBus.last().macd.macd > 0
+    def fall_score(ctx: Ctx) -> int:
+        fall_score = 0
+        if not ctx.is_allow_sell: return fall_score
+
+        agg = ctx.agg
+        vwa = ctx.node.vwa
+        curr_price = ctx.node.ema.ema05
+        if curr_price < agg.orb_low: fall_score += 35  # 突破ORL
+        if agg.orb_low <= curr_price < agg.orb_mid_low: fall_score += 20  # ORL区间
+
+        if curr_price < vwa.avg_price: fall_score += 25  # 在均价线下
+        if agg.sum_vol > 1.2 * agg.avg_vol: fall_score += 20  # 强放量
+        if 1.2 * agg.avg_vol >= agg.sum_vol > 0.8 * agg.avg_vol: fall_score += 10  # 温和量
+
+        if vwa.sum_yin > 1.2 * vwa.sum_yan: fall_score += 10  # 阴线数量
+        if vwa.sum_yin_vol > 1.2 * vwa.sum_yan_vol: fall_score += 10  # 阴线成交量
+
+        if ctx.ema_state == 'fall': fall_score += 3  # MA
+        if ctx.macd_state == 'fall': fall_score += 2  # MACD
+        return fall_score
 
     @staticmethod
-    def is_allow_sell(market: Market) -> bool:
-        """允许卖出"""
-        if market.ctx.has_sell: return False
-        return market.pos.avail_amount * market.pos.curr_price > 500
-
-    @staticmethod
-    def rise_risk_control(ctx: Ctx):
-        """正T风险控制"""
-        if ctx.has_sell: return
-        if not ctx.has_buy: return
-        if ctx.buy_price == 0.0: return
-        rate = 0.995
-        pct = round((ctx.curr_price - ctx.buy_price) / ctx.buy_price * 100, 2)
-        for threshold, ratio in Var.rise_safe_lvls.items():
-            if pct >= threshold:
-                rate = ratio
-                break
-        ctx.keep_rise_price = max(ctx.keep_rise_price, round(ctx.buy_price * rate, 3))
-
-    @staticmethod
-    def fall_risk_control(ctx: Ctx):
-        """反T风险控制"""
-        if ctx.has_buy: return
-        if not ctx.has_sell: return
-        if ctx.sell_price == 0.0: return
+    def safe_fall_price(ctx: Ctx):
+        act = ctx.act
+        if act.has_buy: return
+        if not act.has_sell: return
+        if act.sell_price == 0.0: return
         rate = 1.005
-        pct = round((ctx.sell_price - ctx.curr_price) / ctx.sell_price * 100, 2)
+        pct = round((act.sell_price - ctx.curr_price) / act.sell_price * 100, 2)
         for threshold, ratio in Var.fall_safe_lvls.items():
             if pct >= threshold:
                 rate = ratio
                 break
-        ctx.keep_fall_price = min(ctx.keep_fall_price, round(ctx.sell_price * rate, 3))
+        act.safe_fall_price = min(act.safe_fall_price, round(act.sell_price * rate, 3))
 
 
 class Trader:
     def __init__(self, buy: Callable, sell: Callable):
-        self.step = Flow.Step()
+        self.step = Step.Start
         self.sell = sell
         self.buy = buy
 
-    def main_trading(self, market: Market):
-        ctx = market.ctx
-        if ctx.has_buy and ctx.has_sell: return
-        action, step = self.step.eval(ctx)
-        self._to_next(step)
-        if action == 'buy':
-            self._do_buy(market)
-        if action == 'sell':
-            self._do_sell(market)
+    def main_trading(self, ctx: Ctx):
+        if ctx.act.has_buy and ctx.act.has_sell: return
+        action, next_step = self.step.eval(ctx)
+        if action == 'Buy':
+            self._do_buy(ctx)
+        if action == 'Sell':
+            self._do_sell(ctx)
+        if next_step != 'Wait':
+            self._to_next(next_step)
 
-    def tail_trading(self, market: Market):
-        ctx = market.ctx
-        if ctx.has_buy and ctx.is_allow_sell:
-            self._do_sell(market)
-            return
-        if ctx.has_sell and ctx.is_allow_buy:
-            self._do_buy(market)
+    def tail_trading(self, ctx: Ctx):
+        # 有持仓，且允许卖出，且不允许买入，则卖出
+        is_keep_pos = Rule.is_keep_pos(ctx)
+        if is_keep_pos and ctx.is_allow_sell and not ctx.is_allow_buy:
+            self._do_sell(ctx)
             return
 
-    def _to_next(self, next_step: str):
-        if next_step == 'SellStep':
-            self.step = Flow.SellStep()
-            return
-        if next_step == 'BuyStep':
-            self.step = Flow.BuyStep()
-            return
-        if next_step == 'EndStep':
-            self.step = Flow.EndStep()
+        # 无持仓，且允许买入，则买入
+        if not is_keep_pos and ctx.is_allow_buy:
+            self._do_buy(ctx)
             return
 
-    def _do_buy(self, market: Market):
-        pos = market.pos
+    def _do_buy(self, ctx: Ctx):
+        pos = ctx.pos
         curr_price = pos.curr_price
         buy_amount = round(Var.base_fund / curr_price / 100) * 100
-        self.buy(market.symbol, buy_amount, limit_price=curr_price + 0.003)
-        market.ctx.has_buy = True
-        market.ctx.buy_price = curr_price
-        market.ctx.buy_amount = buy_amount
+        self.buy(pos.symbol, buy_amount, limit_price=curr_price + 0.003)
+        ctx.act.has_buy = True
+        ctx.act.buy_price = curr_price
+        ctx.act.buy_amount = buy_amount
+        # Env.print(ctx)
 
-    def _do_sell(self, market: Market):
-        pos = market.pos
+    def _do_sell(self, ctx: Ctx):
+        pos = ctx.pos
         curr_price = pos.curr_price
         base_amount = round(Var.base_fund * 1.5 / curr_price / 100) * 100
         able_amount = min(pos.avail_amount, base_amount)
         sell_amount = able_amount - (0 if able_amount < pos.total_amount else 100)
-        self.sell(market.symbol, -sell_amount, limit_price=curr_price - 0.003)
-        market.ctx.has_sell = True
-        market.ctx.sell_price = curr_price
-        market.ctx.sell_amount = sell_amount
+        self.sell(pos.symbol, -sell_amount, limit_price=curr_price - 0.003)
+        ctx.act.has_sell = True
+        ctx.act.sell_price = curr_price
+        ctx.act.sell_amount = sell_amount
+        # Env.print(ctx)
+
+    def _to_next(self, next_step: str):
+        if next_step == 'SellStep':
+            self.step = Step.Sell()
+            return
+        if next_step == 'EndStep':
+            self.step = Step.End()
+            return
 
 
 ############################################################
+class Bus:
+    def __init__(self):
+        self.data: list[Box.Node] = []
+        self.conf: dict[str, Any] = {}
+
+    def __len__(self):
+        return len(self.data)
+
+    def add(self, node: Box.Node):
+        self.data.append(node)
+
+    def get(self, idx: int) -> Box.Node:
+        return self.data[idx]
+
+    def last(self) -> Box.Node:
+        return self.data[-1]
+
+    def rollback(self):
+        node = self.data.pop()
+        if node.flag >= 0:
+            self.data.append(node)
+
+
 class Ctx:
     def __init__(self):
+        self.pos = None  # 当前持仓
         self.node = None  # 当前节点
-        self.curr_time = None # 当前时间
-        self.base_price = 0.0  # 昨日收盘价
-        self.open_price = 0.0  # 开盘价格
-        self.curr_price = 0.0  # 最新价格
-        self.open_pct = 0.0  # 开盘价格（%）
-        self.curr_pct = 0.0  # 最新价格（%）
-        self.wave_pct = 0.0  # 相对开盘价的波动价格（%）
-
-        self.ema_trend = ''  # EMA趋势
-        self.macd_trend = ''  # MACD趋势
         self.is_allow_buy = False  # 是否允许买入
         self.is_allow_sell = False  # 是否允许卖出
-        self.keep_rise_price = -1000  # 正T风控价格
-        self.keep_fall_price = 1000  # 反T风控价格
 
-        self.orb_low = 0.0  # 开盘区间内的最低价
-        self.orb_high = 0.0  # 开盘区间内的最高价
-        self.sum_volume = 0.0  # 开盘区间内的成交量之和
-        self.sum_vol_05 = 0.0  # 前5日每日前8分钟的成交量之和
-        self.sum_vol_20 = 0.0  # 前5日每日前20分钟的成交量之和
+        self.base_price = 0.0  # 昨收盘价
+        self.open_price = 0.0  # 开盘价格
+        self.curr_price = 0.0  # 最新价格
+        self.open_price_pct = 0.0  # 开盘价格（%）
+        self.curr_price_pct = 0.0  # 最新价格（%）
+        self.comp_price_pct = 0.0  # 相对价格（%）
 
-        self.has_buy = False  # 是否已经买入
-        self.has_sell = False  # 是否已经卖出
-        self.buy_price = 0.0  # 买入时的价格
-        self.sell_price = 0.0  # 卖出时的价格
-        self.buy_amount = 0.0  # 买入时的数量
-        self.sell_amount = 0.0  # 卖出时的数量
+        self.act = Bin.Act()  # 操作记录
+        self.agg = Bin.Agg()  # 聚合数据
+        self.ema_state = ''  # EMA趋势
+        self.macd_state = ''  # MACD趋势
+        self.fall_score = 0.0  # 空头分数
+
+    def update(self, market: Market):
+        self.curr_price = self.pos.curr_price
+        if len(market.fenBus) == 1:
+            self.open_price = self.node.bar.open
+        self.is_allow_buy = Rule.is_allow_buy(market)
+        self.is_allow_sell = Rule.is_allow_sell(market)
+        if self.is_allow_buy or self.is_allow_sell:
+            self.open_price_pct = round((self.open_price - self.base_price) / self.base_price * 100, 2)
+            self.curr_price_pct = round((self.curr_price - self.base_price) / self.base_price * 100, 2)
+            self.comp_price_pct = round((self.curr_price - self.open_price) / self.base_price * 100, 2)
+            self.ema_state = Rule.ema_state(self)
+            self.macd_state = Rule.macd_state(self)
+            self.fall_score = Rule.fall_score(self)
+            Rule.safe_fall_price(self)
+
+    def collect(self):
+        low = self.node.orb.orb_low
+        high = self.node.orb.orb_high
+        self.agg.sum_vol = self.node.vwa.sum_volume
+        self.agg.avg_vol = self.agg.avg_vol_list.pop()
+        self.agg.orb_low = low
+        self.agg.orb_high = high
+        self.agg.orb_mid_low = round(low + (high - low) * 0.3, 3)
+        self.agg.orb_mid_high = round(low + (high - low) * 0.7, 3)
 
 
 class Market:
-    def __init__(self, symbol: str):
-        self.dayBus = Bus(maxlen=120)  # 日线数据
-        self.fenBus = Bus(maxlen=240, conf=Var.fen)  # 分钟数据
+    def __init__(self, symbol: str, buy: Callable, sell: Callable):
+        self.trader = Trader(buy, sell)  # 交易规则
         self.symbol = symbol  # 股票代码
+        self.dayBus = Bus()  # 日线数据
+        self.fenBus = Bus()  # 分钟数据
         self.ctx = Ctx()  # 上下文数据
-        self.pos = None  # 当前持仓
 
     def prep(self, bars: list):
-        if not bars:
-            return self
         for bar in bars:
-            self.dayBus.add(Node(bar))
+            self.dayBus.add(Box.Node(bar))
             Line.Ema.calc(self.dayBus)
             Line.Macd.calc(self.dayBus)
         self.ctx.base_price = self.dayBus.last().bar.close
+        self.fenBus.conf = Var.fen
         self.fenBus.conf['base_price'] = self.ctx.base_price
         return self
 
-    def next(self, pos, bar):
+    def running(self, pos, bar):
         # 分钟数据
-        node = Node(bar)
+        node = Box.Node(bar)
         self.fenBus.add(node)
-        Line.Vma.calc(self.fenBus)
+        Line.Vwa.calc(self.fenBus)
         Line.Ema.calc(self.fenBus)
         Line.Macd.calc(self.fenBus)
+        if node.time <= "10:50:00":
+            Line.Orb.calc(self.fenBus)
 
         # 日线数据
         self.dayBus.rollback()
-        self.dayBus.add(Node(bar).mark(-1))
+        self.dayBus.add(Box.Node(bar).mark(-1))
         Line.Ema.calc(self.dayBus)
         Line.Macd.calc(self.dayBus)
 
         # 更新上下文数据
-        self.pos = Bin.Pos(pos)
-        self.update_ctx()
-
-    def update_ctx(self):
-        node = self.fenBus.last()
-        base_price = self.ctx.base_price
-        curr_price = self.pos.curr_price
+        self.ctx.pos = Bin.Pos(pos)
         self.ctx.node = node
-        if len(self.fenBus) == 1:
-            self.ctx.open_price = node.bar.open
-            self.ctx.open_pct = round((self.ctx.open_price - base_price) / base_price * 100, 2)
-            self.ctx.orb_high = curr_price
-            self.ctx.orb_low = curr_price
-        if node.bar.datetime.time() <= Var.head_data_time:
-            self.ctx.orb_low = min(self.ctx.orb_low, curr_price)
-            self.ctx.orb_high = max(self.ctx.orb_high, curr_price)
-            self.ctx.sum_volume = self.ctx.sum_volume + node.bar.volume
-        self.ctx.curr_time = node.bar.datetime.strftime('%Y-%m-%d %H:%M:%S')
-        self.ctx.curr_price = curr_price
-        self.ctx.curr_pct = round((curr_price - base_price) / base_price * 100, 2)
-        self.ctx.wave_pct = round((curr_price - self.ctx.open_price) / base_price * 100, 2)
-        self.ctx.ema_trend = Rule.ema_trend(node.ema)
-        self.ctx.macd_trend = Rule.macd_trend(node.macd)
-        self.ctx.is_allow_buy = Rule.is_allow_buy(self)
-        self.ctx.is_allow_sell = Rule.is_allow_sell(self)
-        Rule.rise_risk_control(self.ctx)
-        Rule.fall_risk_control(self.ctx)
+        self.ctx.update(self)
+
+    def trading(self):
+        if not self.ctx.is_allow_buy and not self.ctx.is_allow_sell:
+            return
+        curr_time = self.ctx.node.time
+        if curr_time <= "09:35:00":
+            return
+        if curr_time <= "14:30:00":
+            self.trader.main_trading(self.ctx)
+            return
+        if curr_time == "14:55:00":
+            self.trader.tail_trading(self.ctx)
 
 
 ############################################################
 class Env:
-    indexes: list[str] = ['000001.SS', '000852.SS']
-    symbols: list[str] = []
     markets: dict[str, Market] = {}
-    traders: dict[str, Trader] = {}
-
-    @staticmethod
-    def market(symbol: str):
-        return Env.markets.get(symbol)
-
-    @staticmethod
-    def trader(symbol: str):
-        trader = Env.traders.get(symbol)
-        if trader is None:
-            trader = Trader(order, order)
-            Env.traders[symbol] = trader
-        return trader
 
     @staticmethod
     def launch(context):
-        Env.clear()
+        Env.markets.clear()
         positions = context.portfolio.positions
         pos_codes = list(positions.keys())
-        Env.symbols = pos_codes.copy()
         set_universe(pos_codes)
         history_day = get_history(60, frequency='1d', security_list=pos_codes)
-        for code in pos_codes:
-            bars = Env.parse_bars(history_day, code)
-            Env.markets[code] = Market(code).prep(bars)
-
         history_fen = get_history(960, frequency='5m', security_list=pos_codes)
         for code in pos_codes:
-            ctx = Env.markets[code].ctx
+            bars = Env.parse_bars(history_day, code)
             data = history_fen.query(f'code in ["{code}"]')
-            ctx.sum_vol_05 = (
-                data.assign(date=data.index.date)
-                .groupby('date').head(1)
-                .groupby('date')['volume'].sum()
-                .tail(17).mean()
-            )
-            ctx.sum_vol_20 = (
-                data.assign(date=data.index.date)
-                .groupby('date').head(4)
-                .groupby('date')['volume'].sum()
-                .tail(17).mean()
-            )
+            market = Market(code, order, order).prep(bars)
+            market.ctx.agg.avg_vol_list = [Env.avg_vol(data, num) for num in [4, 3, 2, 1]]
+            Env.markets[code] = market
+
+    @staticmethod
+    def avg_vol(data, num):
+        return (
+            data.assign(date=data.index.date)
+            .groupby('date').head(num)
+            .groupby('date')['volume'].sum()
+            .tail(20).mean()
+        )
 
     @staticmethod
     def parse_bars(history, symbol):
@@ -655,22 +593,36 @@ class Env:
         return bars
 
     @staticmethod
-    def clear():
-        Env.symbols.clear()
-        Env.markets.clear()
-        Env.traders.clear()
+    def to_dict(obj):
+        """递归将对象转换为字典"""
+        if hasattr(obj, '__dict__'):
+            return {k: Env.to_dict(v) for k, v in obj.__dict__.items()}
+        elif isinstance(obj, (list, tuple)):
+            return [Env.to_dict(item) for item in obj]
+        elif isinstance(obj, dict):
+            return {k: Env.to_dict(v) for k, v in obj.items()}
+        else:
+            return obj
+
+    @staticmethod
+    def print(obj):
+        print(Env.to_dict(obj))
 
 
 ############################################################
 def initialize(context):
     """启动时执行一次"""
+    run_daily(context, set_agg, time='09:36')
+    run_daily(context, set_agg, time='09:41')
+    run_daily(context, set_agg, time='09:46')
+    run_daily(context, set_agg, time='09:51')
+
     if is_trade(): return
     set_commission(commission_ratio=0.00005, min_commission=0.5, type="ETF")
 
     # 设置底仓
     pos = {}
-    pos['sid'] = "588760.SS"
-    pos['sid'] = "159995.SZ"
+    pos['sid'] = "515650.SS"
     pos['amount'] = "100"
     pos['enable_amount'] = "100"
     pos['cost_basis'] = "1.0"
@@ -686,29 +638,19 @@ def before_trading_start(context, data):
 
 def handle_data(context, data):
     """每个单位周期执行一次"""
-    cur_time = context.blotter.current_dt.time()
     positions = context.portfolio.positions
-    for symbol in Env.symbols:
+    for symbol, market in Env.markets.items():
         bar = data[symbol]
         pos = positions.get(symbol)
-        market = Env.market(symbol)
-        trader = Env.trader(symbol)
-        market.next(pos, bar)
-        if cur_time <= Var.open_data_time:
-            continue
-        if cur_time <= Var.main_eval_time:
-            trader.main_trading(market)
-            continue
-        if cur_time > Var.tail_eval_time:
-            trader.tail_trading(market)
-
-
-def tick_data(context, data):
-    """每个tick执行一次"""
-    pass
+        market.running(pos, bar)
+        market.trading()
 
 
 def after_trading_end(context, data):
     """每天交易结束之后执行一次"""
-    Env.clear()
     pass
+
+
+def set_agg(context):
+    for market in Env.markets.values():
+        market.ctx.collect()
