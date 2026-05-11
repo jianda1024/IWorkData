@@ -23,13 +23,16 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Callable, Any
 
+import numpy as np
+import pandas as pd
+
+from pandas import DataFrame, Series
+from sklearn.linear_model import LinearRegression
+
 
 class Var:
     base_fund = 3000  # 交易基础金额（元）
-    open_trade_time = "09:35:00"  # 开盘静默时间（09:30 ~ 09:35）
-    head_trade_time = "09:45:00"  # 开盘静默时间（09:35 ~ 09:45）
-    main_trade_time = "14:30:00"  # 盘中交易时间（09:35 ~ 14:30）
-    tail_trade_time = "14:55:00"  # 尾盘平仓时间（14:55 ~ 15:00）
+    tail_time = "14:40:00"
 
     fen = {
         "macd_fast": 13,
@@ -37,6 +40,20 @@ class Var:
         "macd_sign": 5,
     }
 
+    rise_safe_lvls = {
+        9.0: 1.080,
+        8.0: 1.070,
+        7.0: 1.060,
+        6.0: 1.050,
+        5.0: 1.040,
+        4.0: 1.032,
+        3.5: 1.025,
+        3.0: 1.020,
+        2.5: 1.015,
+        2.0: 1.010,
+        1.5: 1.005,
+        1.0: 1.000,
+    }
     fall_safe_lvls = {
         9.0: 0.920,
         8.0: 0.930,
@@ -65,16 +82,6 @@ class Bin:
             self.safe_rise_price = 0.0  # 正T风控价格
             self.safe_fall_price = 1000  # 反T风控价格
 
-    class Agg:
-        def __init__(self):
-            self.avg_vol_list = []
-            self.avg_vol = 0.0  # 前20日，每天前X分钟，成交量和的平均值
-            self.sum_vol = 0.0  # 今日，前X分钟，成交量之和
-            self.orb_low = 100  # 开盘区间内的最低价
-            self.orb_high = 0.0  # 开盘区间内的最高价
-            self.orb_mid_low = 0.0  # ORL+(ORH-ORL)*0.3
-            self.orb_mid_high = 0.0  # ORL+(ORH-ORL)*0.7
-
     class Pos:
         def __init__(self, pos):
             self.symbol: str = getattr(pos, 'sid', '')  # 股票代码
@@ -96,209 +103,223 @@ class Bin:
             self.high: float = round(bar.high, 3)  # 最高价
             self.low: float = round(bar.low, 3)  # 最低价
 
+        def agg(self, bar: Bin.Bar):
+            if bar is None:
+                return self
+            self.volume += bar.volume
+            self.money += bar.money
+            self.open = bar.open
+            self.high = max(self.high, bar.high)
+            self.low = min(self.low, bar.low)
+            return self
+
+        def to_dict(self) -> dict:
+            return {
+                "volume": self.volume,
+                "money": self.money,
+                "price": self.price,
+                "close": self.close,
+                "open": self.open,
+                "high": self.high,
+                "low": self.low,
+            }
+
+    class Node:
+        def __init__(self):
+            pass
+
 
 class Box:
-    class Orb:
+    class Adx:
         def __init__(self):
-            self.orb_low: float = 0.0  # 开盘区间内的最低价
-            self.orb_high: float = 0.0  # 开盘区间内的最高价
+            self.di_bull: float = 0.0
+            self.di_bear: float = 0.0
+            self.adx: float = 0.0
+            self.atr: float = 0.0
 
-    class Vwa:
+    class Sma:
         def __init__(self):
-            self.sum_volume: float = 0.0  # 成交量总和
-            self.sum_money: float = 0.0  # 成交额总和
-            self.avg_price: float = 0.0  # 成交量加权平均价格
-
-            self.sum_bar: int = 0  # bar总和
-            self.sum_yan: int = 0  # 阳线总和
-            self.sum_yin: int = 0  # 阴线总和
-            self.sum_yan_vol: float = 0.0  # 阳线成交量总和
-            self.sum_yin_vol: float = 0.0  # 阴线成交量总和
-
-    class Ema:
-        def __init__(self):
-            self.ema05: float = 0.0
-            self.ema10: float = 0.0
-            self.ema20: float = 0.0
-            self.ema30: float = 0.0
+            self.ma05: float = 0.0
+            self.ma10: float = 0.0
+            self.ma20: float = 0.0
 
     class Macd:
         def __init__(self):
-            self.fast: float = 0.0
-            self.slow: float = 0.0
-            self.dif_: float = 0.0
-            self.dea_: float = 0.0
+            self.dif: float = 0.0
+            self.dea: float = 0.0
             self.macd: float = 0.0
 
-    class Node:
-        def __init__(self, bar):
-            self.time: str = bar.datetime.strftime("%H:%M:%S")
-            self.flag: int = 0
-            self.bar = Bin.Bar(bar)
-            self.ema = None
-            self.macd = None
+    class Boll:
+        def __init__(self):
+            self.mid = 0.0  # 中轨
+            self.upper = 0.0  # 上轨
+            self.lower = 0.0  # 下轨
 
-        def mark(self, flag):
-            self.flag = flag
-            return self
+    class Rsrs:
+        def __init__(self):
+            self.beta = 0.0  # 原始斜率
+            self.zscore = 0.0  # 标准化后的强度
 
 
 class Line:
-    class Orb:
+    class Adx:
         @staticmethod
-        def calc(bus):
-            node = bus.last()
-            price = node.bar.close
-            node.orb = orb = Box.Orb()
-            if len(bus) == 1:
-                orb.orb_low = price
-                orb.orb_high = price
-            else:
-                prev_orb = bus.get(-2).orb
-                orb.orb_low = min(prev_orb.orb_low, price)
-                orb.orb_high = max(prev_orb.orb_high, price)
+        def calculate(df: DataFrame, node: Bin.Node):
+            # 前一日收盘价
+            prev_close = df['close'].shift(1)
 
-    class Vwa:
-        @staticmethod
-        def calc(bus):
-            node = bus.last()
-            node.vwa = vwa = Box.Vwa()
-            if len(bus) == 1:
-                prev_money = prev_volume = 0
-            else:
-                prev_vwa = bus.get(-2).vwa
-                prev_money, prev_volume = prev_vwa.sum_money, prev_vwa.sum_volume
-            bar = node.bar
-            vwa.sum_volume = prev_volume + bar.volume
-            vwa.sum_money = prev_money + bar.money
-            vwa.avg_price = round(vwa.sum_money / vwa.sum_volume / 100, 4)
-            vwa.sum_bar += 1
-            if bar.close >= bar.open:
-                vwa.sum_yan += 1
-                vwa.sum_yan_vol += bar.volume
-            else:
-                vwa.sum_yin += 1
-                vwa.sum_yin_vol += bar.volume
+            # 计算 TR（真实波幅）
+            tr1 = df['high'] - df['low']
+            tr2 = (df['high'] - prev_close).abs()
+            tr3 = (df['low'] - prev_close).abs()
+            tr = np.maximum.reduce([tr1, tr2, tr3])
 
-    class Ema:
-        @staticmethod
-        def calc(bus: Bus):
-            node = bus.last()
-            price = node.bar.close
-            node.ema = Box.Ema()
-            if len(bus) == 1:
-                Line.Ema.first(node, price)
-            else:
-                Line.Ema.next(bus, node, price)
+            # 计算 +DM / -DM（方向动量）
+            up_move = df['high'] - df['high'].shift(1)
+            dn_move = df['low'].shift(1) - df['low']
+            dm_bull = pd.Series(np.where((up_move > dn_move) & (up_move > 0), up_move, 0.0), index=df.index)
+            dm_bear = pd.Series(np.where((dn_move > up_move) & (dn_move > 0), dn_move, 0.0), index=df.index)
+
+            # 平滑处理
+            period = 14
+            tr_smooth = Line.Adx.smooth(tr, period)
+            dm_bull_smooth = Line.Adx.smooth(dm_bull, period)
+            dm_bear_smooth = Line.Adx.smooth(dm_bear, period)
+
+            # 计算 +DI / -DI
+            di_bull = (dm_bull_smooth / tr_smooth) * 100
+            di_bear = (dm_bear_smooth / tr_smooth) * 100
+
+            # 计算 DX → ADX
+            dx = abs(di_bull - di_bear) / (di_bull + di_bear) * 100
+            adx = Line.Adx.smooth(dx, period)
+
+            node.adx = Box.Adx()
+            node.adx.di_bull = di_bull.iloc[-1]
+            node.adx.di_bear = di_bear.iloc[-1]
+            node.adx.adx = adx.iloc[-1]
+            node.adx.atr = tr_smooth.iloc[-1]
 
         @staticmethod
-        def first(node: Box.Node, price: float):
-            curr_ema = node.ema
-            curr_ema.ema05 = price
-            curr_ema.ema10 = price
-            curr_ema.ema20 = price
-            curr_ema.ema30 = price
+        def smooth(series: Series, window):
+            return series.rolling(window=window, min_periods=1).mean()
+
+    class Sma:
+        @staticmethod
+        def calculate(df: DataFrame, node: Bin.Node):
+            ma05 = Line.Sma.smooth(df['close'], 5)
+            ma10 = Line.Sma.smooth(df['close'], 10)
+            ma20 = Line.Sma.smooth(df['close'], 20)
+            node.sma = Box.Sma()
+            node.sma.ma05 = ma05.iloc[-1]
+            node.sma.ma10 = ma10.iloc[-1]
+            node.sma.ma20 = ma20.iloc[-1]
 
         @staticmethod
-        def next(bus: Bus, node: Box.Node, price: float):
-            curr_ema = node.ema
-            prev_ema = bus.get(-2).ema
-            curr_ema.ema05 = Line.Ema.ema(prev_ema.ema05, price, 5)
-            curr_ema.ema10 = Line.Ema.ema(prev_ema.ema10, price, 10)
-            curr_ema.ema20 = Line.Ema.ema(prev_ema.ema20, price, 20)
-            curr_ema.ema30 = Line.Ema.ema(prev_ema.ema30, price, 30)
-
-        @staticmethod
-        def ema(prev_val: float, price: float, period: int):
-            alpha = 2 / (period + 1)
-            value = alpha * price + (1 - alpha) * prev_val
-            return round(value, 4)
+        def smooth(series: pd.Series, window: int) -> pd.Series:
+            return series.rolling(window=window, min_periods=1).mean()
 
     class Macd:
         @staticmethod
-        def calc(bus: Bus):
-            node = bus.last()
-            price = node.bar.close
+        def calculate(df: DataFrame, node: Bin.Node):
+            period_fast = 12
+            period_slow = 26
+            period_sign = 9
+
+            close = df["close"]
+            ema_fast = Line.Macd.smooth(close, period_fast)
+            ema_slow = Line.Macd.smooth(close, period_slow)
+            dif = ema_fast - ema_slow
+            dea = Line.Macd.smooth(dif, period_sign)
+            macd = (dif - dea) * 2
+
             node.macd = Box.Macd()
-            if len(bus) == 1:
-                Line.Macd._first(node, price)
-            else:
-                Line.Macd._next(bus, node, price)
+            node.macd.dif = dif.iloc[-1]
+            node.macd.dea = dea.iloc[-1]
+            node.macd.macd = macd.iloc[-1]
 
         @staticmethod
-        def _first(node: Box.Node, price: float):
-            curr_macd = node.macd
-            curr_macd.fast = price
-            curr_macd.slow = price
-            curr_macd.ema_ = price
-            curr_macd.dif_ = 0.0
-            curr_macd.dea_ = 0.0
-            curr_macd.macd = 0.0
+        def smooth(series: pd.Series, span: int) -> pd.Series:
+            return series.ewm(span=span, adjust=False).mean()
+
+    class Boll:
+        @staticmethod
+        def calculate(df: DataFrame, node: Bin.Node):
+            period_boll = 20  # 中轨 SMA 周期
+            multiplier = 2  # 带宽倍数（默认 2倍 ATR）
+
+            low = df["low"]
+            high = df["high"]
+            close = df["close"]
+            prev_close = close.shift(1)
+
+            # 1. 计算 TR、ATR
+            tr1 = high - low
+            tr2 = (high - prev_close).abs()
+            tr3 = (low - prev_close).abs()
+            tr = pd.Series(np.maximum.reduce([tr1, tr2, tr3]), index=df.index)
+            atr = Line.Sma.smooth(tr, period_boll)
+
+            # 2. 中轨
+            boll_mid = Line.Sma.smooth(close, period_boll)
+
+            # 3. 上下轨
+            boll_upper = boll_mid + multiplier * atr
+            boll_lower = boll_mid - multiplier * atr
+
+            # 赋值到 node
+            node.boll = Box.Boll()
+            node.boll.mid = boll_mid.iloc[-1]
+            node.boll.upper = boll_upper.iloc[-1]
+            node.boll.lower = boll_lower.iloc[-1]
+
+    class Rsrs:
+        @staticmethod
+        def calculate(df: DataFrame, node: Bin.Node):
+            beta_window = 18  # 回归周期
+            zscore_window = 600  # 标准化周期
+
+            # 1. 计算 beta
+            low = df["low"]
+            high = df["high"]
+            beta = Line.Rsrs._calc_beta(high, low, beta_window)
+
+            # 2. 标准化 zscore
+            mean = beta.rolling(window=zscore_window, min_periods=1).mean()
+            std = beta.rolling(window=zscore_window, min_periods=1).std()
+            zscore = (beta - mean) / std
+
+            # 3. 赋值给 node
+            node.rsrs = Box.Rsrs()
+            node.rsrs.beta = beta.iloc[-1]
+            node.rsrs.zscore = zscore.iloc[-1]
 
         @staticmethod
-        def _next(bus: Bus, node: Box.Node, price: float):
-            curr_macd = node.macd
-            prev_node = bus.get(-2)
-            prev_macd = prev_node.macd
-            base_price = bus.conf.get('base_price', node.ema.ema20)
-            curr_macd.fast = Line.Ema.ema(prev_macd.fast, price, bus.conf.get('macd_fast', 12))
-            curr_macd.slow = Line.Ema.ema(prev_macd.slow, price, bus.conf.get('macd_slow', 26))
-            curr_macd.dif_ = round((curr_macd.fast - curr_macd.slow) / base_price * 100, 5)
-            curr_macd.dea_ = Line.Ema.ema(prev_macd.dea_, curr_macd.dif_, bus.conf.get('macd_sign', 9))
-            curr_macd.macd = round((curr_macd.dif_ - curr_macd.dea_) * 2, 4)
+        def _calc_beta(high: pd.Series, low: pd.Series, window: int) -> pd.Series:
+            """ 滚动窗口计算 RSRS 斜率 """
+            beta_list = []
+            for i in range(len(high)):
+                if i < window - 1:
+                    beta_list.append(np.nan)
+                    continue
 
+                h = high.iloc[i - window + 1: i + 1].values
+                l = low.iloc[i - window + 1: i + 1].values
+                beta = Line.Rsrs._regress(l, h)
+                beta_list.append(beta)
 
-class Step:
-    class Start:
-        @staticmethod
-        def eval(ctx: Ctx):
-            if Step.Start.branch_sell(ctx):
-                return "Sell", "SellStep"
-            if ctx.node.time <= Var.head_trade_time:
-                return "Hold", "Wait"
-            if ctx.fall_score >= 70:
-                return "Sell", "SellStep"
-            return "Hold", "Wait"
+            return pd.Series(beta_list, index=high.index)
 
         @staticmethod
-        def branch_sell(ctx: Ctx) -> bool:
-            vwa = ctx.node.vwa
-            if not ctx.is_allow_sell: return False
-            if ctx.curr_price >= ctx.agg.orb_low: return False
-            if ctx.curr_price >= vwa.avg_price: return False
-            if ctx.agg.sum_vol <= 0.8 * ctx.agg.avg_vol: return False
-            if ctx.comp_price_pct > -0.4: return False
-            if vwa.sum_yin < 1.2 * vwa.sum_yan: return False
-            if vwa.sum_yin_vol < 1.2 * vwa.sum_yan_vol: return False
-            return True
-
-    class Sell:
-        @staticmethod
-        def eval(ctx: Ctx):
-            if Step.Sell.branch_01(ctx): return "Buy", "EndStep"
-            return "Hold", "Wait"
-
-        @staticmethod
-        def branch_01(ctx: Ctx) -> bool:
-            if not ctx.is_allow_buy: return False
-            if ctx.node.ema.ema05 < ctx.act.safe_fall_price: return False
-            if ctx.ema_state == 'fall': return False
-            if ctx.macd_state == 'fall': return False
-            return True
-
-    class End:
-        @staticmethod
-        def eval():
-            return "Hold", "Wait"
+        def _regress(x: np.ndarray, y: np.ndarray) -> float:
+            """线性回归，返回斜率 beta"""
+            model = LinearRegression()
+            model.fit(x.reshape(-1, 1), y)
+            return float(model.coef_[0])
 
 
 ############################################################
 class Rule:
-    @staticmethod
-    def is_keep_pos(ctx: Ctx) -> bool:
-        """是否已经有持仓"""
-        return ctx.pos.valuation > 500
-
     @staticmethod
     def is_allow_buy(market: Market) -> bool:
         """是否允许买入"""
@@ -341,6 +362,28 @@ class Rule:
         return 'flat'
 
     @staticmethod
+    def rise_score(ctx: Ctx) -> int:
+        rise_score = 0
+        if not ctx.is_allow_buy: return rise_score
+
+        agg = ctx.agg
+        vwa = ctx.node.vwa
+        curr_price = ctx.node.ema.ema05
+        if curr_price > agg.orb_high: rise_score += 35  # 突破ORH
+        if agg.orb_mid_high < curr_price <= agg.orb_high: rise_score += 20  # ORH区间
+
+        if curr_price > vwa.avg_price: rise_score += 25  # 在均价线上
+        if agg.sum_vol > 1.2 * agg.avg_vol: rise_score += 20  # 强放量
+        if 0.8 * agg.avg_vol < agg.sum_vol <= 1.2 * agg.avg_vol: rise_score += 10  # 温和量
+
+        if vwa.sum_yan > 1.2 * vwa.sum_yin: rise_score += 10  # 阳线数量
+        if vwa.sum_yan_vol > 1.2 * vwa.sum_yin_vol: rise_score += 10  # 阳线成交量
+
+        if ctx.ema_state == 'rise': rise_score += 3  # MA
+        if ctx.macd_state == 'rise': rise_score += 2  # MACD
+        return rise_score
+
+    @staticmethod
     def fall_score(ctx: Ctx) -> int:
         fall_score = 0
         if not ctx.is_allow_sell: return fall_score
@@ -376,6 +419,20 @@ class Rule:
                 break
         act.safe_fall_price = min(act.safe_fall_price, round(act.sell_price * rate, 3))
 
+    @staticmethod
+    def safe_rise_price(ctx: Ctx):
+        act = ctx.act
+        if act.has_sell: return
+        if not act.has_buy: return
+        if act.buy_price == 0.0: return
+        rate = 0.995
+        pct = round((ctx.curr_price - act.buy_price) / act.buy_price * 100, 2)
+        for threshold, ratio in Var.rise_safe_lvls.items():
+            if pct >= threshold:
+                rate = ratio
+                break
+        act.safe_rise_price = max(act.safe_rise_price, round(act.buy_price * rate, 3))
+
 
 class Trader:
     def __init__(self, buy: Callable, sell: Callable):
@@ -394,14 +451,10 @@ class Trader:
             self._to_next(next_step)
 
     def tail_trading(self, ctx: Ctx):
-        # 有持仓，且允许卖出，且不允许买入，则卖出
-        is_keep_pos = Rule.is_keep_pos(ctx)
-        if is_keep_pos and ctx.is_allow_sell and not ctx.is_allow_buy:
+        if ctx.act.has_buy and ctx.is_allow_sell:
             self._do_sell(ctx)
             return
-
-        # 无持仓，且允许买入，则买入
-        if not is_keep_pos and ctx.is_allow_buy:
+        if ctx.act.has_sell and ctx.is_allow_buy:
             self._do_buy(ctx)
             return
 
@@ -431,127 +484,58 @@ class Trader:
         if next_step == 'SellStep':
             self.step = Step.Sell()
             return
+        if next_step == 'BuyStep':
+            self.step = Step.Buy()
+            return
         if next_step == 'EndStep':
             self.step = Step.End()
             return
 
 
 ############################################################
-class Bus:
-    def __init__(self):
-        self.data: list[Box.Node] = []
-        self.conf: dict[str, Any] = {}
-
-    def __len__(self):
-        return len(self.data)
-
-    def add(self, node: Box.Node):
-        self.data.append(node)
-
-    def get(self, idx: int) -> Box.Node:
-        return self.data[idx]
-
-    def last(self) -> Box.Node:
-        return self.data[-1]
-
-    def rollback(self):
-        node = self.data.pop()
-        if node.flag >= 0:
-            self.data.append(node)
-
-
 class Ctx:
     def __init__(self):
+        self.act = Bin.Act()  # 操作记录
+        self.bar = None  # 当前bar
         self.pos = None  # 当前持仓
         self.node = None  # 当前节点
         self.is_allow_buy = False  # 是否允许买入
         self.is_allow_sell = False  # 是否允许卖出
 
-        self.base_price = 0.0  # 昨收盘价
-        self.open_price = 0.0  # 开盘价格
-        self.curr_price = 0.0  # 最新价格
-        self.open_price_pct = 0.0  # 开盘价格（%）
-        self.curr_price_pct = 0.0  # 最新价格（%）
-        self.comp_price_pct = 0.0  # 相对价格（%）
-
-        self.act = Bin.Act()  # 操作记录
-        self.agg = Bin.Agg()  # 聚合数据
-        self.ema_state = ''  # EMA趋势
-        self.macd_state = ''  # MACD趋势
-        self.fall_score = 0.0  # 空头分数
-
-    def update(self, market: Market):
-        self.curr_price = self.pos.curr_price
-        if len(market.fenBus) == 1:
-            self.open_price = self.node.bar.open
-        self.is_allow_buy = Rule.is_allow_buy(market)
-        self.is_allow_sell = Rule.is_allow_sell(market)
-        if self.is_allow_buy or self.is_allow_sell:
-            self.open_price_pct = round((self.open_price - self.base_price) / self.base_price * 100, 2)
-            self.curr_price_pct = round((self.curr_price - self.base_price) / self.base_price * 100, 2)
-            self.comp_price_pct = round((self.curr_price - self.open_price) / self.base_price * 100, 2)
-            self.ema_state = Rule.ema_state(self)
-            self.macd_state = Rule.macd_state(self)
-            self.fall_score = Rule.fall_score(self)
-            Rule.safe_fall_price(self)
-
-    def collect(self):
-        low = self.node.orb.orb_low
-        high = self.node.orb.orb_high
-        self.agg.sum_vol = self.node.vwa.sum_volume
-        self.agg.avg_vol = self.agg.avg_vol_list.pop()
-        self.agg.orb_low = low
-        self.agg.orb_high = high
-        self.agg.orb_mid_low = round(low + (high - low) * 0.3, 3)
-        self.agg.orb_mid_high = round(low + (high - low) * 0.7, 3)
-
 
 class Market:
-    def __init__(self, symbol: str, buy: Callable, sell: Callable):
-        self.trader = Trader(buy, sell)  # 交易规则
+    def __init__(self, symbol: str):
         self.symbol = symbol  # 股票代码
-        self.dayBus = Bus()  # 日线数据
-        self.fenBus = Bus()  # 分钟数据
+        self.time = None  # 当前时间
+        self.data = None  # 日线数据
         self.ctx = Ctx()  # 上下文数据
 
-    def prep(self, bars: list):
-        for bar in bars:
-            self.dayBus.add(Box.Node(bar))
-            Line.Ema.calc(self.dayBus)
-            Line.Macd.calc(self.dayBus)
-        self.ctx.base_price = self.dayBus.last().bar.close
-        self.fenBus.conf = Var.fen
-        self.fenBus.conf['base_price'] = self.ctx.base_price
+    def prep(self, df: pd.DataFrame):
+        self.data = df.copy()
         return self
 
     def running(self, pos, bar):
-        # 分钟数据
-        node = Box.Node(bar)
-        self.fenBus.add(node)
-        Line.Vwa.calc(self.fenBus)
-        Line.Ema.calc(self.fenBus)
-        Line.Macd.calc(self.fenBus)
-        if node.time <= "10:50:00":
-            Line.Orb.calc(self.fenBus)
-
-        # 日线数据
-        self.dayBus.rollback()
-        self.dayBus.add(Box.Node(bar).mark(-1))
-        Line.Ema.calc(self.dayBus)
-        Line.Macd.calc(self.dayBus)
-
-        # 更新上下文数据
+        self.time = bar.datetime.strftime("%Y-%m-%d %H:%M:%S")
+        self.ctx.bar = Bin.Bar(bar).agg(self.ctx.bar)
         self.ctx.pos = Bin.Pos(pos)
-        self.ctx.node = node
-        self.ctx.update(self)
+        self.ctx.node = Bin.Node()
+
+        df = self.data.copy()
+        curr_bar = self.ctx.bar
+        df.loc[curr_bar.datetime] = curr_bar.to_dict()
+        Line.Adx.calculate(df, self.ctx.node)
+        Line.Sma.calculate(df, self.ctx.node)
+        Line.Macd.calculate(df, self.ctx.node)
+        Line.Boll.calculate(df, self.ctx.node)
+        Line.Rsrs.calculate(df, self.ctx.node)
 
     def trading(self):
         if not self.ctx.is_allow_buy and not self.ctx.is_allow_sell:
             return
         curr_time = self.ctx.node.time
-        if curr_time <= "09:35:00":
+        if curr_time <= Var.wait_time:
             return
-        if curr_time <= "14:30:00":
+        if curr_time <= Var.main_trade_time:
             self.trader.main_trading(self.ctx)
             return
         if curr_time == "14:55:00":
@@ -568,14 +552,10 @@ class Env:
         positions = context.portfolio.positions
         pos_codes = list(positions.keys())
         set_universe(pos_codes)
-        history_day = get_history(60, frequency='1d', security_list=pos_codes)
-        history_fen = get_history(960, frequency='5m', security_list=pos_codes)
+        histories = get_history(60, frequency='1d', security_list=pos_codes)
         for code in pos_codes:
-            bars = Env.parse_bars(history_day, code)
-            data = history_fen.query(f'code in ["{code}"]')
-            market = Market(code, order, order).prep(bars)
-            market.ctx.agg.avg_vol_list = [Env.avg_vol(data, num) for num in [4, 3, 2, 1]]
-            Env.markets[code] = market
+            df = histories.query(f'code in ["{code}"]')
+            Env.markets[code] = Market(code).prep(df)
 
     @staticmethod
     def avg_vol(data, num):
@@ -612,11 +592,6 @@ class Env:
 ############################################################
 def initialize(context):
     """启动时执行一次"""
-    run_daily(context, set_agg, time='09:36')
-    run_daily(context, set_agg, time='09:41')
-    run_daily(context, set_agg, time='09:46')
-    run_daily(context, set_agg, time='09:51')
-
     if is_trade(): return
     set_commission(commission_ratio=0.00005, min_commission=0.5, type="ETF")
 
@@ -649,8 +624,3 @@ def handle_data(context, data):
 def after_trading_end(context, data):
     """每天交易结束之后执行一次"""
     pass
-
-
-def set_agg(context):
-    for market in Env.markets.values():
-        market.ctx.collect()
