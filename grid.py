@@ -25,29 +25,28 @@ import pandas as pd
 
 # region ====== 数据模型层 (Mod) ======
 class ModBar:
-    def __init__(self, bar: ModKLine):
-        self.bar = bar
+    def __init__(self, bar):
+        self.datetime = bar.datetime
+        self.bar = ModKLine(bar)
+        self.ema = {}
 
 
 class ModKLine:
-    def __init__(self, kline=None):
-        if kline is None: return
-        self.datetime = kline.datetime
-        self.volume = round(float(kline.volume), 3)  # 交易量
-        self.money = round(float(kline._base.money), 3)  # 交易金额
-        self.price = round(float(kline.price), 3)  # 最新价
-        self.close = round(float(kline.close), 3)  # 收盘价
-        self.open = round(float(kline.open), 3)  # 开盘价
-        self.high = round(float(kline.high), 3)  # 最高价
-        self.low = round(float(kline.low), 3)  # 最低价
+    def __init__(self, bar):
+        self.volume = round(float(bar.volume), 3)  # 交易量
+        self.money = round(float(bar._base.money), 3)  # 交易金额
+        self.price = round(float(bar.price), 3)  # 最新价
+        self.close = round(float(bar.close), 3)  # 收盘价
+        self.open = round(float(bar.open), 3)  # 开盘价
+        self.high = round(float(bar.high), 3)  # 最高价
+        self.low = round(float(bar.low), 3)  # 最低价
 
-    def agg(self, kline):
-        if kline is None: return
-        self.volume += kline.volume
-        self.money += kline.money
-        self.open = kline.open
-        self.high = max(self.high, kline.high)
-        self.low = min(self.low, kline.low)
+    def agg(self, bar):
+        self.volume = round(self.volume + float(bar.volume), 3)
+        self.money = round(self.money + float(bar._base.money), 3)
+        self.close = round(float(bar.close), 3)
+        self.high = round(max(self.high, float(bar.high)), 3)
+        self.low = round(min(self.low, float(bar.low), 3))
 
 
 class ModPosition:
@@ -65,17 +64,26 @@ class ModPosition:
 # endregion
 # region ====== 技术指标层 (Ind) ======
 class IndEMA:
-    @staticmethod
-    def calc(bars, **kwargs):
-        bars.append()
+    PERIODS = (5, 10, 20, 30, 60, 120, 240)
+    _ALL = tuple((p, 2.0 / (p + 1)) for p in PERIODS)
 
-        pass
+    @classmethod
+    def calc(cls, bars, periods):
+        if not bars: return
+        cur = bars[-1]
+        close = cur.bar.close
+        cur_ema = cur.ema
 
-    def init_bar(self, bars, **kwargs):
-        pass
+        if len(bars) == 1:
+            for p, _ in cls._ALL:
+                if p in periods:
+                    cur_ema[p] = close
+            return
 
-    def next_bar(self, bars, **kwargs):
-        pass
+        pre_ema = bars[-2].ema
+        for p, alpha in cls._ALL:
+            if p in periods:
+                cur_ema[p] = alpha * close + (1.0 - alpha) * pre_ema[p]
 
 
 class IndSMA:
@@ -154,18 +162,18 @@ class Market:
 
     def prepare(self, day_df: pd.DataFrame):
         for _, row in day_df.iterrows():
-            bar = ModBar(ModKLine(row))
-            self.dayBus.append(bar)
+            self.dayBus.append(ModBar(row))
             IndEMA.calc(self.dayBus)
         return self
 
     def running(self, pos, bar):
         # 分钟数据
-        self.fenBus.append(ModBar(ModKLine(bar)))
+        self.fenBus.append(ModBar(bar))
+        IndEMA.calc(self.fenBus, [20, 30, 60])
 
         # 日线数据
         if self.dayBar is None:
-            self.dayBar = ModBar(ModKLine(bar))
+            self.dayBar = ModBar(bar)
         else:
             self.dayBar.bar.agg(bar)
         if bar.datetime.minute % 10 == 0:
