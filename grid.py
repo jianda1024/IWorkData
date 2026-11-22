@@ -1,23 +1,4 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-#
-# Copyright (c) 2026 Phelix Ruan. All rights reserved.
-#
-# Description: Personal Stock Trading Strategy - Market Analysis
-# Author: Phelix Ruan
-# Created: 2026-04-12
-# Email: jianda1024@163.com
-#
 
-"""
-COPYRIGHT:
-    This code is proprietary to Phelix Ruan.
-    No commercial use, distribution, or modification without permission.
-
-DISCLAIMER:
-    For educational purposes only. Not investment advice.
-    Use at your own risk. Author not liable for any losses.
-"""
 from __future__ import annotations
 
 import pandas as pd
@@ -25,13 +6,27 @@ import pandas as pd
 
 # region ====== 数据模型层 (Mod) ======
 class ModBar:
+    __slots__ = ('datetime', 'bar',
+                 'ema', 'macd', 'atr',
+                 'sma', 'avl', 'obv', 'rsi',
+                 )
+
     def __init__(self, bar):
         self.datetime = bar.datetime
         self.bar = ModKLine(bar)
-        self.ema = {}
+        self.ema: dict[int, float] = {}
+        self.macd: ModMACD | None = None
+
+        self.sma: dict[int, float] = {}
+        self.avl: ModAVL | None = None
+        self.atr: ModATR | None = None
+        self.obv: ModOBV | None = None
+        self.rsi: ModRSI | None = None
 
 
 class ModKLine:
+    __slots__ = ('volume', 'money', 'price', 'open', 'high', 'low', 'close')
+
     def __init__(self, bar):
         self.volume = round(float(bar.volume), 3)  # 交易量
         self.money = round(float(bar._base.money), 3)  # 交易金额
@@ -49,51 +44,250 @@ class ModKLine:
         self.low = round(min(self.low, float(bar.low), 3))
 
 
-class ModPosition:
+class ModPos:
+    __slots__ = ('symbol', 'total_amount', 'avail_amount', 'curr_price', 'cost_price')
+
     def __init__(self, pos):
-        self.symbol: str = getattr(pos, 'sid', '')  # 股票代码
-        self.total_amount = getattr(pos, 'amount', 0.0)  # 总持仓数量
-        self.avail_amount = getattr(pos, 'enable_amount', 0.0)  # 可用持仓数量
-        self.curr_price = getattr(pos, 'last_sale_price', 0.0)  # 最新价格
-        self.cost_price = getattr(pos, 'cost_basis', 0.0)  # 成本价格
-        self.total_value = round(self.total_amount * self.curr_price, 3)  # 总市值
-        self.avail_value = round(self.avail_amount * self.curr_price, 3)  # 可用市值
-        self.principal = round(self.total_amount * self.cost_price, 3)  # 本金
+        self.symbol = pos.sid  # 股票代码
+        self.total_amount = pos.amount  # 总持仓数量
+        self.avail_amount = pos.enable_amount  # 可用持仓数量
+        self.curr_price = pos.last_sale_price  # 最新价格
+        self.cost_price = pos.cost_basis  # 成本价格
+
+    def update(self, pos):
+        self.total_amount = pos.amount
+        self.avail_amount = pos.enable_amount
+        self.curr_price = pos.last_sale_price
+        self.cost_price = pos.cost_basis
+
+    @property
+    def total_value(self):
+        return round(self.total_amount * self.curr_price, 3)  # 总市值
+
+    @property
+    def avail_value(self):
+        return round(self.avail_amount * self.curr_price, 3)  # 可用市值
+
+    @property
+    def principal(self):
+        return round(self.total_amount * self.cost_price, 3)  # 本金
+
+
+class ModMACD:
+    __slots__ = ('fast', 'slow', 'dif', 'dea', 'val')
+
+    def __init__(self):
+        self.fast = 0.0
+        self.slow = 0.0
+        self.dif = 0.0
+        self.dea = 0.0
+        self.val = 0.0
+
+
+class ModATR:
+    __slots__ = ("tr_sum", "val")
+
+    def __init__(self):
+        self.tr_sum = 0.0  # 真实波幅的和
+        self.val = 0.0  # 平均真实波幅
+
+
+class ModAVL:
+    __slots__ = ('money', 'volume', 'price')
+
+    def __init__(self):
+        self.money = 0.0
+        self.volume = 0.0
+        self.price = 0.0  # 成交量加权平均价
+
+
+class ModOBV:
+    __slots__ = ("val", "ma")
+
+    def __init__(self):
+        self.val = 0.0  # OBV 累积值
+        self.ma = 0.0  # OBV 的均线
+
+
+class ModRSI:
+    __slots__ = ("gain", "loss", "count", "val")
+
+    def __init__(self):
+        self.gain = 0.0  # 平均上涨
+        self.loss = 0.0  # 平均下跌
+        self.val: float | None = None  # RSI 值
 
 
 # endregion
 # region ====== 技术指标层 (Ind) ======
 class IndEMA:
-    PERIODS = (5, 10, 20, 30, 60, 120, 240)
-    _ALL = tuple((p, 2.0 / (p + 1)) for p in PERIODS)
-
     @classmethod
-    def calc(cls, bars, periods):
+    def calc(cls, bars: list, periods: list):
         if not bars: return
         cur = bars[-1]
-        close = cur.bar.close
+        price = cur.bar.close
         cur_ema = cur.ema
 
         if len(bars) == 1:
-            for p, _ in cls._ALL:
-                if p in periods:
-                    cur_ema[p] = close
+            for p in periods:
+                cur_ema[p] = price
             return
 
         pre_ema = bars[-2].ema
-        for p, alpha in cls._ALL:
-            if p in periods:
-                cur_ema[p] = alpha * close + (1.0 - alpha) * pre_ema[p]
+        for p in periods:
+            alpha = 2.0 / (p + 1)
+            pre_val = pre_ema.get(p, price)
+            cur_ema[p] = pre_val + alpha * (price - pre_val)
 
 
 class IndSMA:
-    pass
+    @classmethod
+    def calc(cls, bars: list, periods: list):
+        if not bars: return
+        length = len(bars)
+        cur_sma = bars[-1].sma
+        tmp_avg = None
+
+        for p in periods:
+            if length > p:
+                cur_sma[p] = sum([b.bar.close for b in bars[-p:]]) / p
+            else:
+                if tmp_avg is None:
+                    tmp_avg = sum([b.bar.close for b in bars]) / length
+                cur_sma[p] = tmp_avg
 
 
 class IndMACD:
-    pass
+    @classmethod
+    def calc(cls, bars: list, fast_period=12, slow_period=26, sign_period=9):
+        if not bars: return
+        cur = bars[-1]
+        price = cur.bar.close
+        cur_macd = cur.macd = ModMACD()
+
+        if len(bars) == 1:
+            cur_macd.fast = price
+            cur_macd.slow = price
+            cur_macd.dif = 0.0
+            cur_macd.dea = 0.0
+            cur_macd.val = 0.0
+            return
+
+        pre_macd = bars[-2].macd
+        fast = pre_macd.fast + (2.0 / (fast_period + 1) * (price - pre_macd.fast))
+        slow = pre_macd.slow + (2.0 / (slow_period + 1) * (price - pre_macd.slow))
+        dif = fast - slow
+        dea = pre_macd.dea + (2.0 / (sign_period + 1) * (dif - pre_macd.dea))
+
+        cur_macd.fast = fast
+        cur_macd.slow = slow
+        cur_macd.dif = dif
+        cur_macd.dea = dea
+        cur_macd.val = round((dif - dea) * 2.0, 4)
 
 
+class IndAVl:
+    @classmethod
+    def calc(cls, bars: list):
+        if not bars: return
+        cur = bars[-1]
+        cur_avl = cur.avl = ModAVL()
+
+        if len(bars) == 1:
+            cur_avl.money = cur.bar.money
+            cur_avl.volume = cur.bar.volume
+        else:
+            pre_avl = bars[-2].avl
+            cur_avl.money = pre_avl.money + cur.bar.money
+            cur_avl.volume = pre_avl.volume + cur.bar.volume
+        cur_avl.price = round(cur_avl.money / cur_avl.volume, 3)
+
+
+class IndATR:
+    @classmethod
+    def calc(cls, bars: list, period: int = 14) -> None:
+        if not bars: return
+        cur = bars[-1]
+        cur_bar = cur.bar
+        cur_atr = cur.atr = ModATR()
+
+        if len(bars) == 1:
+            tr = cur_bar.high - cur_bar.low
+            cur_atr.tr_sum = tr
+            cur_atr.val = round(tr, 4)
+            return
+
+        pre = bars[-2]
+        pre_atr = pre.atr
+        tr = max(cur_bar.high - cur_bar.low, abs(cur_bar.high - pre.bar.close), abs(cur_bar.low - pre.bar.close))
+
+        if len(bars) <= period + 1:
+            cur_atr.tr_sum = pre_atr.tr_sum + tr
+            cur_atr.val = round(cur_atr.tr_sum / len(bars), 4)
+            return
+
+        cur_atr.tr_sum = pre_atr.tr_sum - pre_atr.tr_sum / period + tr
+        cur_atr.val = round(cur_atr.tr_sum / period, 4)
+
+
+class IndOBV:
+    @classmethod
+    def calc(cls, bars: list, period: int = 20) -> None:
+        if not bars: return
+        cur = bars[-1]
+        cur_bar = cur.bar
+        cur_obv = cur.obv = ModOBV()
+        if len(bars) == 1: return
+
+        pre = bars[-2]
+        pre_obv = pre.obv
+        if cur_bar.close > pre.bar.close:
+            cur_obv.val = pre_obv.val + cur_bar.volume
+        elif cur_bar.close < pre.bar.close:
+            cur_obv.val = pre_obv.val - cur_bar.volume
+        else:
+            cur_obv.val = pre_obv.val
+
+        if len(bars) == 2:
+            cur_obv.ma = cur_obv.val
+        else:
+            alpha = 2.0 / (period + 1)
+            cur_obv.ma = alpha * cur_obv.val + (1 - alpha) * pre_obv.ma
+
+
+class IndRSI:
+    @classmethod
+    def calc(cls, bars: list, period=14):
+        if not bars: return
+
+        cur = bars[-1]
+        close = cur.bar.close
+        cur_rsi = cur.rsi = ModRSI()
+        if len(bars) == 1: return
+
+        pre = bars[-2]
+        pre_rsi = pre.rsi
+        change = close - pre.bar.close
+        gain = change if change > 0 else 0.0
+        loss = -change if change < 0 else 0.0
+
+        if len(bars) <= period + 1:
+            n = len(bars) - 1
+            cur_rsi.gain = (pre_rsi.gain * (n - 1) + gain) / n
+            cur_rsi.loss = (pre_rsi.loss * (n - 1) + loss) / n
+        else:
+            cur_rsi.gain = (pre_rsi.gain * (period - 1) + gain) / period
+            cur_rsi.loss = (pre_rsi.loss * (period - 1) + loss) / period
+
+        if len(bars) > period:
+            if cur_rsi.loss == 0:
+                cur_rsi.val = 100.0
+            else:
+                rs = cur_rsi.gain / cur_rsi.loss
+                cur_rsi.val = round(100.0 - 100.0 / (1.0 + rs), 4)
+
+
+## 卡尔曼滤波趋势、R平方与斜率双特征控制
 # endregion
 # region ====== 策略逻辑层 (Stg) ======
 class Stg:
@@ -157,30 +351,43 @@ class Market:
     def __init__(self, symbol: str):
         self.symbol = symbol  # 股票代码
         self.dayBus: list[ModBar] = []  # 日线数据
-        self.fenBus: list[ModBar] = []  # 分钟数据
+        self.minBus: list[ModBar] = []  # 分钟数据
         self.dayBar: ModBar | None = None  # 当前日K
+        self.curPos: ModPos | None = None  # 当前持仓
 
     def prepare(self, day_df: pd.DataFrame):
         for _, row in day_df.iterrows():
             self.dayBus.append(ModBar(row))
-            IndEMA.calc(self.dayBus)
+            self.day_calc(self.dayBus)
         return self
 
     def running(self, pos, bar):
-        # 分钟数据
-        self.fenBus.append(ModBar(bar))
-        IndEMA.calc(self.fenBus, [20, 30, 60])
-
-        # 日线数据
+        self.minBus.append(ModBar(bar))
+        self.min_calc(self.minBus)
         if self.dayBar is None:
             self.dayBar = ModBar(bar)
+            self.curPos = ModPos(pos)
         else:
             self.dayBar.bar.agg(bar)
+            self.curPos.update(pos)
         if bar.datetime.minute % 10 == 0:
             bars = [*self.dayBus, self.dayBar]
-            IndEMA.calc(bars)
+            self.day_calc(bars)
 
-        pass
+    @staticmethod
+    def day_calc(bars: list):
+        IndEMA.calc(bars, [10, 20, 30, 60, 120])
+        IndMACD.calc(bars, 12, 26, 9)
+        IndATR.calc(bars, 14)
+        IndOBV.calc(bars, 20)
+        IndRSI.calc(bars, 14)
+
+    @staticmethod
+    def min_calc(bars: list):
+        IndEMA.calc(bars, [10, 20, 30, 60])
+        IndMACD.calc(bars, 12, 26, 9)
+        IndAVl.calc(bars)
+        IndATR.calc(bars, 14)
 
 
 class Trader:
@@ -208,6 +415,8 @@ def before_trading_start(context, data):
 
 def handle_data(context, data):
     """每个单位周期执行一次"""
+    if not Env.markets:
+        before_trading_start(context, data)
     positions = context.portfolio.positions
     for symbol, market in Env.markets.items():
         bar = data[symbol]
