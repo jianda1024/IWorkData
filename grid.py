@@ -1,5 +1,6 @@
-
 from __future__ import annotations
+
+from typing import NamedTuple
 
 import pandas as pd
 
@@ -7,17 +8,16 @@ import pandas as pd
 # region ====== 数据模型层 (Mod) ======
 class ModBar:
     __slots__ = ('datetime', 'bar',
-                 'ema', 'macd', 'atr',
-                 'sma', 'avl', 'obv', 'rsi',
+                 'sma', 'macd', 'atr',
+                 'avl', 'obv', 'rsi',
                  )
 
     def __init__(self, bar):
         self.datetime = bar.datetime
         self.bar = ModKLine(bar)
-        self.ema: dict[int, float] = {}
+        self.sma: dict[int, float] = {}
         self.macd: ModMACD | None = None
 
-        self.sma: dict[int, float] = {}
         self.avl: ModAVL | None = None
         self.atr: ModATR | None = None
         self.obv: ModOBV | None = None
@@ -73,73 +73,38 @@ class ModPos:
         return round(self.total_amount * self.cost_price, 3)  # 本金
 
 
-class ModMACD:
-    __slots__ = ('fast', 'slow', 'dif', 'dea', 'val')
-
-    def __init__(self):
-        self.fast = 0.0
-        self.slow = 0.0
-        self.dif = 0.0
-        self.dea = 0.0
-        self.val = 0.0
+class ModMACD(NamedTuple):
+    fast: float = 0.0
+    slow: float = 0.0
+    dif: float = 0.0
+    dea: float = 0.0
+    val: float = 0.0
 
 
-class ModATR:
-    __slots__ = ("tr_sum", "val")
-
-    def __init__(self):
-        self.tr_sum = 0.0  # 真实波幅的和
-        self.val = 0.0  # 平均真实波幅
+class ModATR(NamedTuple):
+    tr_sum: float = 0.0  # 平滑后的 TR 和
+    val: float = 0.0  # 平均真实波幅
 
 
-class ModAVL:
-    __slots__ = ('money', 'volume', 'price')
-
-    def __init__(self):
-        self.money = 0.0
-        self.volume = 0.0
-        self.price = 0.0  # 成交量加权平均价
+class ModAVL(NamedTuple):
+    money: float = 0.0  # 当日累计成交额
+    volume: float = 0.0  # 当日累计成交量
+    price: float = 0.0  # 成交量加权平均价（AVL）
 
 
-class ModOBV:
-    __slots__ = ("val", "ma")
-
-    def __init__(self):
-        self.val = 0.0  # OBV 累积值
-        self.ma = 0.0  # OBV 的均线
+class ModOBV(NamedTuple):
+    val: float = 0.0  # OBV 累积值
+    ma: float = 0.0  # OBV 的均线
 
 
-class ModRSI:
-    __slots__ = ("gain", "loss", "count", "val")
-
-    def __init__(self):
-        self.gain = 0.0  # 平均上涨
-        self.loss = 0.0  # 平均下跌
-        self.val: float | None = None  # RSI 值
+class ModRSI(NamedTuple):
+    gain: float = 0.0
+    loss: float = 0.0
+    val: float | None = None  # None 表示数据不足、RSI 无效
 
 
 # endregion
 # region ====== 技术指标层 (Ind) ======
-class IndEMA:
-    @classmethod
-    def calc(cls, bars: list, periods: list):
-        if not bars: return
-        cur = bars[-1]
-        price = cur.bar.close
-        cur_ema = cur.ema
-
-        if len(bars) == 1:
-            for p in periods:
-                cur_ema[p] = price
-            return
-
-        pre_ema = bars[-2].ema
-        for p in periods:
-            alpha = 2.0 / (p + 1)
-            pre_val = pre_ema.get(p, price)
-            cur_ema[p] = pre_val + alpha * (price - pre_val)
-
-
 class IndSMA:
     @classmethod
     def calc(cls, bars: list, periods: list):
@@ -163,14 +128,9 @@ class IndMACD:
         if not bars: return
         cur = bars[-1]
         price = cur.bar.close
-        cur_macd = cur.macd = ModMACD()
 
         if len(bars) == 1:
-            cur_macd.fast = price
-            cur_macd.slow = price
-            cur_macd.dif = 0.0
-            cur_macd.dea = 0.0
-            cur_macd.val = 0.0
+            cur.macd = ModMACD(fast=price, slow=price)
             return
 
         pre_macd = bars[-2].macd
@@ -178,12 +138,8 @@ class IndMACD:
         slow = pre_macd.slow + (2.0 / (slow_period + 1) * (price - pre_macd.slow))
         dif = fast - slow
         dea = pre_macd.dea + (2.0 / (sign_period + 1) * (dif - pre_macd.dea))
-
-        cur_macd.fast = fast
-        cur_macd.slow = slow
-        cur_macd.dif = dif
-        cur_macd.dea = dea
-        cur_macd.val = round((dif - dea) * 2.0, 4)
+        val = round((dif - dea) * 2.0, 4)
+        cur.macd = ModMACD(fast=fast, slow=slow, dif=dif, dea=dea, val=val)
 
 
 class IndAVl:
@@ -191,16 +147,16 @@ class IndAVl:
     def calc(cls, bars: list):
         if not bars: return
         cur = bars[-1]
-        cur_avl = cur.avl = ModAVL()
 
         if len(bars) == 1:
-            cur_avl.money = cur.bar.money
-            cur_avl.volume = cur.bar.volume
+            money = cur.bar.money
+            volume = cur.bar.volume
         else:
             pre_avl = bars[-2].avl
-            cur_avl.money = pre_avl.money + cur.bar.money
-            cur_avl.volume = pre_avl.volume + cur.bar.volume
-        cur_avl.price = round(cur_avl.money / cur_avl.volume, 3)
+            money = pre_avl.money + cur.bar.money
+            volume = pre_avl.volume + cur.bar.volume
+        price = round(money / volume, 3) if volume else cur.bar.close
+        cur.avl = ModAVL(money=money, volume=volume, price=price)
 
 
 class IndATR:
@@ -209,12 +165,11 @@ class IndATR:
         if not bars: return
         cur = bars[-1]
         cur_bar = cur.bar
-        cur_atr = cur.atr = ModATR()
 
         if len(bars) == 1:
-            tr = cur_bar.high - cur_bar.low
-            cur_atr.tr_sum = tr
-            cur_atr.val = round(tr, 4)
+            tr_sum = cur_bar.high - cur_bar.low
+            val = round(tr_sum, 4)
+            cur.atr = ModATR(tr_sum=tr_sum, val=val)
             return
 
         pre = bars[-2]
@@ -222,12 +177,12 @@ class IndATR:
         tr = max(cur_bar.high - cur_bar.low, abs(cur_bar.high - pre.bar.close), abs(cur_bar.low - pre.bar.close))
 
         if len(bars) <= period + 1:
-            cur_atr.tr_sum = pre_atr.tr_sum + tr
-            cur_atr.val = round(cur_atr.tr_sum / len(bars), 4)
-            return
-
-        cur_atr.tr_sum = pre_atr.tr_sum - pre_atr.tr_sum / period + tr
-        cur_atr.val = round(cur_atr.tr_sum / period, 4)
+            tr_sum = pre_atr.tr_sum + tr
+            val = round(tr_sum / len(bars), 4)
+        else:
+            tr_sum = pre_atr.tr_sum - pre_atr.tr_sum / period + tr
+            val = round(tr_sum / period, 4)
+        cur.atr = ModATR(tr_sum=tr_sum, val=val)
 
 
 class IndOBV:
@@ -236,23 +191,25 @@ class IndOBV:
         if not bars: return
         cur = bars[-1]
         cur_bar = cur.bar
-        cur_obv = cur.obv = ModOBV()
-        if len(bars) == 1: return
+        if len(bars) == 1:
+            cur.obv = ModOBV()
+            return
 
         pre = bars[-2]
         pre_obv = pre.obv
         if cur_bar.close > pre.bar.close:
-            cur_obv.val = pre_obv.val + cur_bar.volume
+            val = pre_obv.val + cur_bar.volume
         elif cur_bar.close < pre.bar.close:
-            cur_obv.val = pre_obv.val - cur_bar.volume
+            val = pre_obv.val - cur_bar.volume
         else:
-            cur_obv.val = pre_obv.val
+            val = pre_obv.val
 
         if len(bars) == 2:
-            cur_obv.ma = cur_obv.val
+            ma = val
         else:
             alpha = 2.0 / (period + 1)
-            cur_obv.ma = alpha * cur_obv.val + (1 - alpha) * pre_obv.ma
+            ma = alpha * val + (1 - alpha) * pre_obv.ma
+        cur.obv = ModOBV(val=val, ma=ma)
 
 
 class IndRSI:
@@ -262,8 +219,9 @@ class IndRSI:
 
         cur = bars[-1]
         close = cur.bar.close
-        cur_rsi = cur.rsi = ModRSI()
-        if len(bars) == 1: return
+        if len(bars) == 1:
+            cur.rsi = ModRSI()
+            return
 
         pre = bars[-2]
         pre_rsi = pre.rsi
@@ -273,19 +231,20 @@ class IndRSI:
 
         if len(bars) <= period + 1:
             n = len(bars) - 1
-            cur_rsi.gain = (pre_rsi.gain * (n - 1) + gain) / n
-            cur_rsi.loss = (pre_rsi.loss * (n - 1) + loss) / n
+            cur_gain   = (pre_rsi.gain * (n - 1) + gain) / n
+            cur_loss  = (pre_rsi.loss * (n - 1) + loss) / n
         else:
-            cur_rsi.gain = (pre_rsi.gain * (period - 1) + gain) / period
-            cur_rsi.loss = (pre_rsi.loss * (period - 1) + loss) / period
+            cur_gain  = (pre_rsi.gain * (period - 1) + gain) / period
+            cur_loss  = (pre_rsi.loss * (period - 1) + loss) / period
 
+        val = None
         if len(bars) > period:
-            if cur_rsi.loss == 0:
-                cur_rsi.val = 100.0
+            if cur_loss == 0:
+                val = 100.0
             else:
-                rs = cur_rsi.gain / cur_rsi.loss
-                cur_rsi.val = round(100.0 - 100.0 / (1.0 + rs), 4)
-
+                rs = cur_gain / cur_loss
+                val = round(100.0 - 100.0 / (1.0 + rs), 4)
+        cur.rsi = ModRSI(gain=cur_gain, loss=cur_loss, val=val)
 
 ## 卡尔曼滤波趋势、R平方与斜率双特征控制
 # endregion
