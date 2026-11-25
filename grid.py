@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from enum import Enum
 from typing import NamedTuple
 
 import pandas as pd
@@ -231,11 +232,11 @@ class IndRSI:
 
         if len(bars) <= period + 1:
             n = len(bars) - 1
-            cur_gain   = (pre_rsi.gain * (n - 1) + gain) / n
-            cur_loss  = (pre_rsi.loss * (n - 1) + loss) / n
+            cur_gain = (pre_rsi.gain * (n - 1) + gain) / n
+            cur_loss = (pre_rsi.loss * (n - 1) + loss) / n
         else:
-            cur_gain  = (pre_rsi.gain * (period - 1) + gain) / period
-            cur_loss  = (pre_rsi.loss * (period - 1) + loss) / period
+            cur_gain = (pre_rsi.gain * (period - 1) + gain) / period
+            cur_loss = (pre_rsi.loss * (period - 1) + loss) / period
 
         val = None
         if len(bars) > period:
@@ -246,10 +247,28 @@ class IndRSI:
                 val = round(100.0 - 100.0 / (1.0 + rs), 4)
         cur.rsi = ModRSI(gain=cur_gain, loss=cur_loss, val=val)
 
+
 ## 卡尔曼滤波趋势、R平方与斜率双特征控制
 # endregion
 # region ====== 策略逻辑层 (Stg) ======
+class Status(Enum):
+    INIT = "init"  # 初始状态
+    BULL_TREND = "bull_trend"  # 多头趋势
+    BULL_DECAY = "bull_decay"  # 多头衰竭
+    BEAR_TREND = "bear_trend"  # 空头趋势
+    BEAR_DECAY = "bear_decay"  # 空头衰竭
+    RANGE_WAVE = "range_wave"  # 震荡
+
+
 class Stg:
+    def next_state(self):
+        pass
+
+    def execute(self):
+        pass
+
+
+class StgInit(Stg):
     def next_state(self):
         pass
 
@@ -302,6 +321,7 @@ class Var:
 
 class Env:
     markets: dict[str, Market] = {}
+    traders: dict[str, Trader] = {}
 
 
 # endregion
@@ -313,8 +333,10 @@ class Market:
         self.minBus: list[ModBar] = []  # 分钟数据
         self.dayBar: ModBar | None = None  # 当前日K
         self.curPos: ModPos | None = None  # 当前持仓
+        self.status: Status | None = None  # 当前状态
 
     def prepare(self, day_df: pd.DataFrame):
+        self.status = Status.INIT
         for _, row in day_df.iterrows():
             self.dayBus.append(ModBar(row))
             self.day_calc(self.dayBus)
@@ -335,7 +357,6 @@ class Market:
 
     @staticmethod
     def day_calc(bars: list):
-        IndEMA.calc(bars, [10, 20, 30, 60, 120])
         IndMACD.calc(bars, 12, 26, 9)
         IndATR.calc(bars, 14)
         IndOBV.calc(bars, 20)
@@ -343,14 +364,12 @@ class Market:
 
     @staticmethod
     def min_calc(bars: list):
-        IndEMA.calc(bars, [10, 20, 30, 60])
         IndMACD.calc(bars, 12, 26, 9)
         IndAVl.calc(bars)
         IndATR.calc(bars, 14)
 
 
 class Trader:
-    # 执行买、卖
     pass
 
 
